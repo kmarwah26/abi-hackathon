@@ -63,9 +63,12 @@ its PDFs are there. If it's empty, run **Notebook 1 · Step 5** first (that's wh
 the Volume and documents are created).
 @@@CODE
 dbutils.widgets.text("catalog", "main", "Unity Catalog catalog (same as Notebook 1)")
-dbutils.widgets.text("schema", "abi_hackathon", "Schema (same as Notebook 1)")
-CATALOG = dbutils.widgets.get("catalog")
-SCHEMA = dbutils.widgets.get("schema")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
+# Same username-appended schema as Notebook 1 (deterministic per user).
+import re
+CATALOG = dbutils.widgets.get("catalog").strip()
+_user = spark.sql("SELECT current_user()").collect()[0][0]
+SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{re.sub(r'[^a-z0-9]+', '_', _user.split('@')[0].lower()).strip('_')}"
 VOLUME = "knowledge_base"
 FQ = f"{CATALOG}.{SCHEMA}"
 VOL_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"

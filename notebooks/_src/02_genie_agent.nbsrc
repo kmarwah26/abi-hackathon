@@ -47,10 +47,14 @@ dbutils.library.restartPython()
 Point at the catalog/schema you created in Notebook 1.
 @@@CODE
 dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
-dbutils.widgets.text("schema", "abi_hackathon", "Schema (same as Notebook 1)")
-CATALOG = dbutils.widgets.get("catalog")
-SCHEMA = dbutils.widgets.get("schema")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
+# Same username-appended schema as Notebook 1 (deterministic per user).
+import re
+CATALOG = dbutils.widgets.get("catalog").strip()
+_user = spark.sql("SELECT current_user()").collect()[0][0]
+SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{re.sub(r'[^a-z0-9]+', '_', _user.split('@')[0].lower()).strip('_')}"
 FQ = f"{CATALOG}.{SCHEMA}"
+print(f"Using {FQ}")
 spark.sql(f"USE {FQ}")
 print(f"Curating Genie metadata for: {FQ}")
 

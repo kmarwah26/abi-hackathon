@@ -53,18 +53,29 @@ notebook:
 - **catalog** — an **existing** Unity Catalog catalog you can create schemas in.
   You typically *won't* have permission to create a catalog, so enter one your
   workspace already provides (ask your admin if unsure). We do **not** create it.
-- **schema** — created for you inside that catalog. Sharing a workspace? Make it
-  unique per person, e.g. `abi_jsmith`.
+- **schema** — a **base** name. The notebook **automatically appends your username**
+  (e.g. `abi_hackathon_jsmith`), so it's unique per person with no manual naming and
+  no collisions when several people share a catalog. Every notebook derives the
+  **same** name for you, so you don't re-enter it.
 @@@CODE
 # Widgets only — run this cell, then set the values in the widget bar up top.
 dbutils.widgets.text("catalog", "main", "Unity Catalog catalog (must already exist)")
-dbutils.widgets.text("schema", "abi_hackathon", "Schema (created for you; unique per person)")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema base (your username is appended)")
 @@@MD
 Now read the widgets and create **just the schema** inside your chosen catalog.
 @@@CODE
+import re
 CATALOG = dbutils.widgets.get("catalog").strip()
-SCHEMA = dbutils.widgets.get("schema").strip()
+
+# Auto-append your username so each participant gets a unique schema (no manual
+# uniqueness, no collisions when sharing a catalog). It's derived from your
+# Databricks identity and is deterministic, so every notebook resolves to the
+# SAME schema for you — you never have to re-enter it.
+_user = spark.sql("SELECT current_user()").collect()[0][0]
+_slug = re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
+SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{_slug}"
 FQ = f"{CATALOG}.{SCHEMA}"
+print(f"User:   {_user}")
 print(f"Target: {FQ}")
 
 # We do NOT create the catalog — enter an existing one you can use. We only create
@@ -369,9 +380,13 @@ into a **UC Volume**. Same catalog, same governance — just unstructured.
 %pip install --quiet reportlab
 @@@CODE
 # Create the Volume (Unity Catalog-governed storage for unstructured files).
-# Re-read widgets so this step is self-contained (the %pip above can reset state).
-CATALOG = dbutils.widgets.get("catalog")
-SCHEMA = dbutils.widgets.get("schema")
+# Re-read widgets so this step is self-contained (the %pip above can reset state) —
+# same username-appended schema as Step 1.
+import re
+CATALOG = dbutils.widgets.get("catalog").strip()
+_user = spark.sql("SELECT current_user()").collect()[0][0]
+_slug = re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
+SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{_slug}"
 FQ = f"{CATALOG}.{SCHEMA}"
 
 VOLUME = "knowledge_base"

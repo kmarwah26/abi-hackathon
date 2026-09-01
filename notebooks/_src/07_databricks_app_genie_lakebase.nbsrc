@@ -255,8 +255,12 @@ SP = app.service_principal_client_id
 print(f"App SP: {SP}  ({app.service_principal_name})")
 
 dbutils.widgets.text("catalog", "serverless_razks1_catalog", "Unity Catalog catalog")
-dbutils.widgets.text("schema", "abi_hackathon", "Schema")
-CATALOG = dbutils.widgets.get("catalog"); SCHEMA = dbutils.widgets.get("schema")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
+# Same username-appended schema as Notebook 1 (deterministic per user).
+import re
+CATALOG = dbutils.widgets.get("catalog").strip()
+_user = spark.sql("SELECT current_user()").collect()[0][0]
+SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{re.sub(r'[^a-z0-9]+', '_', _user.split('@')[0].lower()).strip('_')}"
 
 spark.sql(f"GRANT USE CATALOG ON CATALOG {CATALOG} TO `{SP}`")
 spark.sql(f"GRANT USE SCHEMA ON SCHEMA {CATALOG}.{SCHEMA} TO `{SP}`")
