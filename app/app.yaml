@@ -28,10 +28,12 @@ env:
   # ----------------------------------------------------------------------
   # Demand-forecast Model Serving endpoint (plain-sklearn copy of the Notebook 4
   # model). The Forecast tab sends typed features here for live inference.
-  # FORECAST_BASE_YEAR must match the model's training base year (min order year).
+  # PER-USER: set this to the endpoint Notebook 4 (Step 6) printed for you —
+  # `abi-demand-forecast-<your-username>`. FORECAST_BASE_YEAR must match the
+  # model's training base year (min order year), also printed by Notebook 4.
   # ----------------------------------------------------------------------
   - name: FORECAST_ENDPOINT
-    value: "abi-demand-forecast"
+    value: "abi-demand-forecast"          # e.g. abi-demand-forecast-jsmith
   - name: FORECAST_BASE_YEAR
     value: "2023"
 
@@ -42,10 +44,11 @@ env:
   # the Database resource (below) is what gives the app's service principal a
   # Lakebase role + network access; app.py mints its own OAuth token.
   # ----------------------------------------------------------------------
-  # Logical database inside Lakebase that holds our app tables (notebook 3).
+  # Logical database inside Lakebase that holds our app tables (Notebook 5).
+  # PER-USER: set to the DB Notebook 5/7 printed for you — `abi_app_<your-username>`.
   - name: PGAPPDB
-    value: "abi_app"
-  # Instance name — used to look up the host and mint the OAuth DB credential.
+    value: "abi_app"                      # e.g. abi_app_jsmith
+  # Instance name — SHARED across users; used to look up the host + mint the token.
   - name: LAKEBASE_INSTANCE
     value: "abi-hackathon-lakebase"
 

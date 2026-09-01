@@ -35,18 +35,21 @@ dbutils.library.restartPython()
 dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Delta schema base (username appended — matches NB1)")
 dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance name")
-dbutils.widgets.text("app_db", "abi_app", "Lakebase logical database")
+dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")
 dbutils.widgets.dropdown("capacity", "CU_1", ["CU_1", "CU_2", "CU_4", "CU_8"], "Instance capacity")
 
-# Same username-appended Delta schema as Notebook 1 (deterministic per user); this
-# is only the Delta *source* — the Lakebase logical db (app_db) is separate.
+# Per-user identity (deterministic). The Lakebase *instance* is shared (one is
+# plenty and it's the pricey bit), but each user gets their own **logical DB**
+# (abi_app_<user>) and their own Delta **schema** (matches Notebook 1) — so
+# participants in a shared workspace never collide.
 import re
 CATALOG = dbutils.widgets.get("catalog").strip()
 _user = spark.sql("SELECT current_user()").collect()[0][0]
-SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{re.sub(r'[^a-z0-9]+', '_', _user.split('@')[0].lower()).strip('_')}"
+_slug = re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")[:30]
+SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{_slug}"
 FQ = f"{CATALOG}.{SCHEMA}"
-INSTANCE = dbutils.widgets.get("lakebase_instance")
-APP_DB = dbutils.widgets.get("app_db")
+INSTANCE = dbutils.widgets.get("lakebase_instance").strip()   # shared instance
+APP_DB = f"{dbutils.widgets.get('app_db').strip()}_{_slug}"    # per-user logical DB
 CAPACITY = dbutils.widgets.get("capacity")
 print(f"Delta source : {FQ}")
 print(f"Lakebase     : instance='{INSTANCE}' db='{APP_DB}' capacity={CAPACITY}")

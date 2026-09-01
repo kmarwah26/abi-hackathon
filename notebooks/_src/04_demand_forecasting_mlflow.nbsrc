@@ -58,11 +58,14 @@ dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
 dbutils.widgets.text("horizon", "3", "Forecast horizon (months)")
 dbutils.widgets.text("test_months", "3", "Holdout months for evaluation")
-# Same username-appended schema as Notebook 1 (deterministic per user).
+# Per-user identity (deterministic): _slug for schemas/db names, _dslug (hyphens)
+# for app + serving-endpoint names, which don't allow underscores.
 import re
 CATALOG = dbutils.widgets.get("catalog").strip()
 _user = spark.sql("SELECT current_user()").collect()[0][0]
-SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{re.sub(r'[^a-z0-9]+', '_', _user.split('@')[0].lower()).strip('_')}"
+_slug = re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")[:30]
+_dslug = _slug.replace("_", "-")
+SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{_slug}"
 FQ = f"{CATALOG}.{SCHEMA}"
 HORIZON = int(dbutils.widgets.get("horizon"))
 TEST_MONTHS = int(dbutils.widgets.get("test_months"))
@@ -285,7 +288,7 @@ from mlflow.models.signature import infer_signature
 from mlflow.tracking import MlflowClient
 
 SERVING_MODEL = f"{FQ}.demand_forecaster_serving"
-FORECAST_ENDPOINT = "abi-demand-forecast"
+FORECAST_ENDPOINT = f"abi-demand-forecast-{_dslug}"   # per-user (no collisions in a shared workspace)
 
 serving_pipe = Pipeline([
     ("prep", ColumnTransformer(
@@ -304,7 +307,8 @@ with mlflow.start_run(run_name="demand_gbr_serving"):
 SERVING_VERSION = str(max(int(v.version) for v in
     MlflowClient(registry_uri="databricks-uc").search_model_versions(f"name='{SERVING_MODEL}'")))
 print(f"Registered {SERVING_MODEL} v{SERVING_VERSION}")
-print(f"⇒ Set FORECAST_BASE_YEAR = {BASE_YEAR} in app.yaml (matches the model's `trend` feature).")
+print(f"⇒ In app.yaml (Notebook 7) set: FORECAST_ENDPOINT = {FORECAST_ENDPOINT}")
+print(f"⇒ In app.yaml set: FORECAST_BASE_YEAR = {BASE_YEAR}  (matches the model's `trend` feature).")
 @@@CODE
 # Create (or update) the endpoint — scale-to-zero keeps cost ~$0 when idle.
 from databricks.sdk import WorkspaceClient
@@ -328,7 +332,7 @@ else:
 from databricks.sdk.service.serving import (
     ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel)
 try:
-    sp = w.apps.get(name="abi-genie-app").service_principal_client_id
+    sp = w.apps.get(name=f"abi-genie-app-{_dslug}").service_principal_client_id
     ep = w.serving_endpoints.get(name=FORECAST_ENDPOINT)
     w.serving_endpoints.update_permissions(
         serving_endpoint_id=ep.id,

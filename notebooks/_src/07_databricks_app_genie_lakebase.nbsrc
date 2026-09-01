@@ -126,9 +126,13 @@ from databricks.sdk import WorkspaceClient
 from sqlalchemy import create_engine, text
 
 dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance name")
-dbutils.widgets.text("app_db", "abi_app", "Lakebase logical database")
-INSTANCE = dbutils.widgets.get("lakebase_instance")
-APP_DB = dbutils.widgets.get("app_db")
+dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")
+import re
+INSTANCE = dbutils.widgets.get("lakebase_instance").strip()
+_user = spark.sql("SELECT current_user()").collect()[0][0]
+_slug = re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")[:30]
+APP_DB = f"{dbutils.widgets.get('app_db').strip()}_{_slug}"   # per-user logical DB (matches NB5)
+print(f"Lakebase DB: {APP_DB}")
 
 w = WorkspaceClient()
 inst = w.database.get_database_instance(name=INSTANCE)
@@ -167,10 +171,16 @@ Open **`../app/app.yaml`** and set:
 - `GENIE_SPACE_ID` → your space id from Notebook 2 (the `…/genie/rooms/<id>` part)
 - `KA_ENDPOINT` → your Knowledge Assistant serving-endpoint name from Notebook 3
   (leave blank to hide the "Ask the docs" tab)
-- `FORECAST_ENDPOINT` → the serving endpoint from **Notebook 4, Step 6**
-  (`abi-demand-forecast`) — powers the Forecast tab's live inference
+- `FORECAST_ENDPOINT` → the per-user serving endpoint from **Notebook 4, Step 6**
+  (`abi-demand-forecast-<your-username>`, which NB4 printed) — powers the Forecast
+  tab's live inference
 - `FORECAST_BASE_YEAR` → the value Notebook 4 printed (matches the model's `trend`)
-- `LAKEBASE_INSTANCE` / `PGAPPDB` → match Notebook 5 (`abi-hackathon-lakebase` / `abi_app`)
+- `LAKEBASE_INSTANCE` → `abi-hackathon-lakebase` (shared instance); `PGAPPDB` →
+  your per-user logical DB from Notebook 5 (`abi_app_<your-username>`, which NB5/NB7 printed)
+
+The Step 4 snippet below prints your exact `APP_DB` / `FORECAST_ENDPOINT` — copy
+those into `app.yaml`. (Resource **names** are per-user so several participants can
+run this in one workspace without collisions; only the Lakebase instance is shared.)
 
 You don't hard-code the `PG*` connection values — the app derives the host + user
 from the Lakebase instance and mints its own OAuth token. Attaching the **Database
@@ -189,7 +199,16 @@ PROFILE=<your-profile>
 ME=$(databricks current-user me -p $PROFILE | jq -r .userName)
 SPACE_ID=<your Genie space id from Notebook 2>
 KA_ENDPOINT=<your Knowledge Assistant endpoint from Notebook 3>
-FORECAST_ENDPOINT=abi-demand-forecast   # from Notebook 4, Step 6
+
+# Per-user names so several participants in one workspace don't collide. These
+# match what Notebooks 4 & 5 create; only the Lakebase INSTANCE is shared.
+SLUG=$(echo "${ME%@*}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+|_+$//g' | cut -c1-30)
+DSLUG=$(echo "$SLUG" | tr '_' '-')
+APP_NAME=abi-genie-app-$DSLUG
+APP_DB=abi_app_$SLUG                       # per-user logical DB (Notebook 5)
+FORECAST_ENDPOINT=abi-demand-forecast-$DSLUG   # per-user endpoint (Notebook 4, Step 6)
+echo "app=$APP_NAME  db=$APP_DB  forecast=$FORECAST_ENDPOINT"
+# ⇒ Set PGAPPDB=$APP_DB and FORECAST_ENDPOINT=$FORECAST_ENDPOINT in app.yaml (Step 3).
 
 # 1. Create the app WITH its resources in one shot.
 #    - database resource         -> Lakebase role + network access for the SP
@@ -198,11 +217,11 @@ FORECAST_ENDPOINT=abi-demand-forecast   # from Notebook 4, Step 6
 #                                    and on the demand-forecast endpoint
 cat > /tmp/abi_app_create.json <<EOF
 {
-  "name": "abi-genie-app",
+  "name": "$APP_NAME",
   "description": "ABI Genie + Lakebase + Knowledge Assistant + forecast app",
   "resources": [
     {"name": "lakebase", "database": {"instance_name": "abi-hackathon-lakebase",
-       "database_name": "abi_app", "permission": "CAN_CONNECT_AND_CREATE"}},
+       "database_name": "$APP_DB", "permission": "CAN_CONNECT_AND_CREATE"}},
     {"name": "genie", "genie_space": {"space_id": "$SPACE_ID", "permission": "CAN_RUN"}},
     {"name": "knowledge_assistant",
        "serving_endpoint": {"name": "$KA_ENDPOINT", "permission": "CAN_QUERY"}},
@@ -214,13 +233,13 @@ EOF
 databricks apps create --json @/tmp/abi_app_create.json -p $PROFILE   # waits for compute ACTIVE
 
 # 2. Sync the app source, then deploy.
-databricks sync ./app /Workspace/Users/$ME/abi-genie-app-src \
+databricks sync ./app /Workspace/Users/$ME/$APP_NAME-src \
   --exclude __pycache__ --exclude .venv -p $PROFILE
-databricks apps deploy abi-genie-app \
-  --source-code-path /Workspace/Users/$ME/abi-genie-app-src -p $PROFILE
+databricks apps deploy $APP_NAME \
+  --source-code-path /Workspace/Users/$ME/$APP_NAME-src -p $PROFILE
 
 # 3. Get the URL (view logs at <url>/logz).
-databricks apps get abi-genie-app -p $PROFILE
+databricks apps get $APP_NAME -p $PROFILE
 ```
 
 > The `lakebase` + `genie` resources are the ones tested to `RUNNING` earlier; the
@@ -249,18 +268,22 @@ All of these are automated below — the SP id is fetched from the app, no copy-
 @@@CODE
 # 5a · Unity Catalog grants (run in this notebook; uses spark).
 from databricks.sdk import WorkspaceClient
+import re
 w = WorkspaceClient()
-app = w.apps.get(name="abi-genie-app")
-SP = app.service_principal_client_id
-print(f"App SP: {SP}  ({app.service_principal_name})")
 
 dbutils.widgets.text("catalog", "serverless_razks1_catalog", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
-# Same username-appended schema as Notebook 1 (deterministic per user).
-import re
+# Same per-user identity as the other notebooks (deterministic).
 CATALOG = dbutils.widgets.get("catalog").strip()
 _user = spark.sql("SELECT current_user()").collect()[0][0]
-SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{re.sub(r'[^a-z0-9]+', '_', _user.split('@')[0].lower()).strip('_')}"
+_slug = re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")[:30]
+_dslug = _slug.replace("_", "-")
+SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{_slug}"
+APP_NAME = f"abi-genie-app-{_dslug}"   # per-user app name
+
+app = w.apps.get(name=APP_NAME)
+SP = app.service_principal_client_id
+print(f"App {APP_NAME} · SP: {SP}  ({app.service_principal_name})")
 
 spark.sql(f"GRANT USE CATALOG ON CATALOG {CATALOG} TO `{SP}`")
 spark.sql(f"GRANT USE SCHEMA ON SCHEMA {CATALOG}.{SCHEMA} TO `{SP}`")
@@ -283,7 +306,6 @@ with engine.begin() as c:
     # demand_forecast is read-only for the Forecast tab's chart.
     c.execute(text(f'GRANT SELECT ON app.demand_forecast TO "{SP}"'))
     # serial/bigserial sequences backing the write-back tables.
-    c.execute(text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO "{SP}"'))
     c.execute(text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO "{SP}"'))
 print(f"Granted conversation + action-item + forecast access to the app SP.")
 
@@ -353,9 +375,11 @@ Apps and Lakebase **bill while running** and have no built-in TTL. So schedule a
 `_stop_resources` notebook via a **Quartz cron pinned to a single future minute**
 (so it fires exactly once). Adjust `shutdown_after_hours`.
 
-Need it sooner, or want to keep going? Stop now, or delete the job:
+Need it sooner, or want to keep going? Stop now, or delete the job (use *your*
+per-user app name, e.g. `abi-genie-app-jsmith`):
 ```bash
-databricks apps stop abi-genie-app -p <profile>
+databricks apps stop abi-genie-app-<your-username> -p <profile>
+# The Lakebase instance is SHARED — only stop it if no one else is using it:
 databricks database update-database-instance abi-hackathon-lakebase "stopped" --stopped -p <profile>
 # databricks jobs delete <job_id>   # cancel the scheduled auto-shutdown
 ```
@@ -365,12 +389,16 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs
 w = WorkspaceClient()
 
-dbutils.widgets.text("app_name", "abi-genie-app", "Databricks App name")
-dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance")
+import re
+dbutils.widgets.text("app_name", "", "Databricks App name (blank = auto per-user)")
+dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance (shared)")
 dbutils.widgets.text("shutdown_after_hours", "3", "Auto-shutdown after N hours")
-APP = dbutils.widgets.get("app_name").strip()
+_user = spark.sql("SELECT current_user()").collect()[0][0]
+_dslug = re.sub(r"[^a-z0-9]+", "-", _user.split("@")[0].lower()).strip("-")[:30]
+APP = dbutils.widgets.get("app_name").strip() or f"abi-genie-app-{_dslug}"
 INSTANCE = dbutils.widgets.get("lakebase_instance").strip()
 N = float(dbutils.widgets.get("shutdown_after_hours"))
+print(f"Auto-shutdown target app: {APP}")
 
 # Locate the sibling _stop_resources notebook (same folder as this one).
 nb_path = (dbutils.notebook.entry_point.getDbutils().notebook()
