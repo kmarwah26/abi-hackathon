@@ -47,22 +47,35 @@ a deliberately Genie-friendly star: clear keys, obvious joins, one grain per tab
 
 Use notebook **widgets** so you never edit code — and so each participant can
 point at their **own** catalog/schema.
-@@@CODE
-# Choose your target — edit the widgets at the top of the notebook.
-# TIP: sharing a workspace? Make `schema` unique per person, e.g. abi_jsmith.
-dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
-dbutils.widgets.text("schema", "abi_hackathon", "Schema (make unique per person)")
 
-CATALOG = dbutils.widgets.get("catalog")
-SCHEMA = dbutils.widgets.get("schema")
+**Run the cell below once to create the widgets**, then set them at the top of the
+notebook:
+- **catalog** — an **existing** Unity Catalog catalog you can create schemas in.
+  You typically *won't* have permission to create a catalog, so enter one your
+  workspace already provides (ask your admin if unsure). We do **not** create it.
+- **schema** — created for you inside that catalog. Sharing a workspace? Make it
+  unique per person, e.g. `abi_jsmith`.
+@@@CODE
+# Widgets only — run this cell, then set the values in the widget bar up top.
+dbutils.widgets.text("catalog", "main", "Unity Catalog catalog (must already exist)")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema (created for you; unique per person)")
+@@@MD
+Now read the widgets and create **just the schema** inside your chosen catalog.
+@@@CODE
+CATALOG = dbutils.widgets.get("catalog").strip()
+SCHEMA = dbutils.widgets.get("schema").strip()
 FQ = f"{CATALOG}.{SCHEMA}"
 print(f"Target: {FQ}")
 
-# Create catalog (if permitted) + schema. Idempotent.
+# We do NOT create the catalog — enter an existing one you can use. We only create
+# the schema inside it. If the catalog isn't accessible, you'll get a clear message.
 try:
-    spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
+    spark.sql(f"USE CATALOG {CATALOG}")
 except Exception as e:
-    print(f"(Skipping catalog create — exists or no permission: {e})")
+    raise RuntimeError(
+        f"Catalog '{CATALOG}' isn't accessible. Set the `catalog` widget to a Unity "
+        f"Catalog catalog you can use (with CREATE SCHEMA rights), then re-run."
+    ) from e
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {FQ}")
 spark.sql(f"USE {FQ}")
 print(f"Using {FQ}")
