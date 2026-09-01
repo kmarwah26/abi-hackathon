@@ -4,3 +4,7 @@ __pycache__/
 .databricks/
 .claude/
 .venv/
+
+# Enablement agenda — not for publishing
+Pre-Hackathon Enablement Agenda_V3.docx
+*.docx
