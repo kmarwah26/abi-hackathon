@@ -73,10 +73,15 @@ CATALOG = dbutils.widgets.get("catalog").strip()
 # SAME schema for you — you never have to re-enter it.
 _user = spark.sql("SELECT current_user()").collect()[0][0]
 _slug = re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")
-SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{_slug}"
+# Idempotent: if the base already ends with your slug (e.g. you re-ran), don't double it.
+_base = dbutils.widgets.get("schema").strip()
+_base = _base[:-(len(_slug) + 1)] if _base.endswith("_" + _slug) else _base
+SCHEMA = f"{_base}_{_slug}"
 FQ = f"{CATALOG}.{SCHEMA}"
-print(f"User:   {_user}")
-print(f"Target: {FQ}")
+print(f"User:            {_user}")
+print(f"Schema (in use): {SCHEMA}   ← base '{_base}' + your username '{_slug}'")
+print(f"Full target:     {FQ}")
+print("(The 'schema' widget stays the base name; the username is appended here in code.)")
 
 # We do NOT create the catalog — enter an existing one you can use. We only create
 # the schema inside it. If the catalog isn't accessible, you'll get a clear message.
