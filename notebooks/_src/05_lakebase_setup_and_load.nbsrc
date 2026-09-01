@@ -156,11 +156,11 @@ print("Schema 'app' ready.")
 @@@MD
 ## Step 4 · Create the tables
 
-Two reference tables (`app.products`, `app.distributors`) the app can read for
-fast lookups, plus two **write-back** tables: **`app.conversations`** (every Genie
-Q&A turn) and **`app.action_items`** (a review/approval queue the app's second
-tab writes to — the transactional read/write state that's the whole point of
-Lakebase).
+Two reference tables (`app.products`, `app.distributors`) the app reads for fast
+lookups **and edits back** (the "Edit distributors" tab), plus three **write-back**
+tables: **`app.conversations`** (every Genie Q&A turn), **`app.action_items`** (a
+review/approval queue), and **`app.forecast_scenarios`** (what-if predictions from
+the Forecast tab). This transactional read/write state is the whole point of Lakebase.
 @@@CODE
 DDL = """
 CREATE TABLE IF NOT EXISTS app.products (
@@ -209,13 +209,29 @@ CREATE TABLE IF NOT EXISTS app.action_items (
     created_at  TIMESTAMP DEFAULT NOW()
 );
 
+-- What-if scenarios written by the app's Forecast tab (Notebook 7): each live
+-- inference call against the demand-forecast serving endpoint is saved here.
+CREATE TABLE IF NOT EXISTS app.forecast_scenarios (
+    id               BIGSERIAL PRIMARY KEY,
+    created_by       TEXT,
+    segment          TEXT,
+    lag_1            DOUBLE PRECISION,
+    lag_2            DOUBLE PRECISION,
+    lag_3            DOUBLE PRECISION,
+    target_month     INT,
+    trend            INT,
+    predicted_cases  DOUBLE PRECISION,
+    created_at       TIMESTAMP DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_conversations_session ON app.conversations(session_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_created ON app.conversations(created_at);
 """
 with app_engine.begin() as c:
     for stmt in [s for s in DDL.split(";") if s.strip()]:
         c.execute(text(stmt))
-print("Tables created: app.products, app.distributors, app.conversations, app.action_items")
+print("Tables created: app.products, app.distributors, app.conversations, "
+      "app.action_items, app.forecast_scenarios")
 
 @@@MD
 ## Step 5 · Copy reference data + the forecast from Delta → Lakebase

@@ -235,8 +235,9 @@ databricks apps get abi-genie-app -p $PROFILE
 The app runs as its **own service principal (SP)**, so grant that SP:
 1. **Unity Catalog** — `SELECT` on the 4 curated tables (Genie runs SQL as the SP).
 2. **Lakebase Postgres** — `INSERT` on `app.conversations`, full CRUD on
-   `app.action_items`, and `SELECT` on `app.demand_forecast` (the tables are owned
-   by *you*, not the SP), plus the SERIAL sequences.
+   `app.action_items`, `app.distributors` (Edit tab) and `app.forecast_scenarios`
+   (Forecast tab), and `SELECT` on `app.demand_forecast` (the tables are owned by
+   *you*, not the SP), plus the SERIAL/BIGSERIAL sequences.
 3. **SQL warehouse** — `CAN_USE` on the warehouse the Genie space runs on. Easy to
    miss: the `CAN_RUN` genie resource lets the SP *call* Genie, but Genie executes
    its SQL on a warehouse the SP must be allowed to use, or you get
@@ -271,8 +272,14 @@ with engine.begin() as c:
     c.execute(text(f'GRANT SELECT, INSERT ON app.conversations TO "{SP}"'))
     # action_items is read/written by the app's "Action items" tab — full CRUD.
     c.execute(text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON app.action_items TO "{SP}"'))
-    # demand_forecast is read-only for the Forecast tab.
+    # distributors is edited in place by the "Edit distributors" tab — full CRUD.
+    c.execute(text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON app.distributors TO "{SP}"'))
+    # forecast_scenarios stores each what-if inference from the Forecast tab.
+    c.execute(text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON app.forecast_scenarios TO "{SP}"'))
+    # demand_forecast is read-only for the Forecast tab's chart.
     c.execute(text(f'GRANT SELECT ON app.demand_forecast TO "{SP}"'))
+    # serial/bigserial sequences backing the write-back tables.
+    c.execute(text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO "{SP}"'))
     c.execute(text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO "{SP}"'))
 print(f"Granted conversation + action-item + forecast access to the app SP.")
 
