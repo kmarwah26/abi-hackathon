@@ -84,7 +84,15 @@ print(f"Using {FQ}")
 ## Step 2 · Generate the data
 
 Everything is seeded (`np.random.seed(42)`) so the dataset is **identical for
-every participant**. We build pandas DataFrames, then write them to Delta.
+every participant**. We build four pandas DataFrames — two **dimensions**
+(`products`, `distributors`) and two **facts** (`orders`, `shipments`) — then write
+them to Delta in Step 3.
+
+The cell below first defines the **reference lists** every table draws from: the
+real Anheuser-Busch **brands** (grouped into commercial **segments** — Core,
+Premium, Value, Craft & Import, Non-Alcoholic), **package** types, **regions/
+states**, distributor **tiers**, and carriers. Sourcing everything from these keeps
+the tables — and the Genie questions you'll ask later — internally consistent.
 @@@CODE
 import numpy as np
 import pandas as pd
@@ -143,6 +151,11 @@ PACKAGES = [
 ]
 print("Reference lists ready.")
 
+@@@MD
+**`products` — a dimension table.** One row per SKU: every brand × package
+combination, tagged with its commercial **segment/category**, units per case, and
+unit cost + list price. This is the catalog Genie joins to whenever you ask about
+brands, segments, or package types.
 @@@CODE
 # ---- products ------------------------------------------------------------
 prod_rows = []
@@ -171,6 +184,11 @@ products = pd.DataFrame(prod_rows)
 print(f"products: {len(products)} rows")
 products.head()
 
+@@@MD
+**`distributors` — a dimension table.** 60 wholesalers spread across US regions.
+Each has a **tier** (Premier / Core / Independent) that drives its credit limit,
+plus home region/state/city and an onboarding date. Tiers are weighted toward Core
+to resemble a realistic book of business.
 @@@CODE
 # ---- distributors --------------------------------------------------------
 TIERS = ["Premier", "Core", "Independent"]
@@ -195,6 +213,11 @@ distributors = pd.DataFrame(dist_rows)
 print(f"distributors: {len(distributors)} rows")
 distributors.head()
 
+@@@MD
+**`orders` — a fact table.** ~9,000 order lines across 24 months (starting Aug
+2023), each linking a distributor to a product with a case quantity and revenue.
+Mainstream beer gets a **summer lift** (May–Aug), so seasonality shows up in
+trends — and gives the Notebook 4 demand forecast something real to learn.
 @@@CODE
 # ---- orders --------------------------------------------------------------
 # ~9,000 orders across 24 months, with summer seasonality for mainstream beer.
@@ -235,6 +258,11 @@ orders = pd.DataFrame(order_rows)
 print(f"orders: {len(orders)} rows")
 orders.head()
 
+@@@MD
+**`shipments` — a fact table.** One shipment per delivered order, with a carrier, a
+**freight cost** that scales with distance and case count, and an **on-time** flag
+(~82% arrive on time). This is the table behind the late-shipment and
+carrier-performance questions you'll ask Genie.
 @@@CODE
 # ---- shipments -----------------------------------------------------------
 # One shipment per non-cancelled order. Freight scales with distance & cases;
