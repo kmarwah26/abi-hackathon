@@ -9,7 +9,8 @@ four tabs that
 1. answers **data** questions with the **Genie** space from Notebook 2,
 2. answers **policy / how-to** questions with the **Agent Bricks Knowledge
    Assistant** from Notebook 3,
-3. charts the **demand forecast** from Notebook 4 (read from Lakebase), and
+3. charts the **demand forecast** from Notebook 4 (read from Lakebase) and runs
+   **live what-if inference** against its Model Serving endpoint (Notebook 4, Step 6), and
 4. logs every Genie turn — and runs a review queue — in **Lakebase** (Notebook 5).
 
 ### App anatomy (from the deck)
@@ -166,6 +167,9 @@ Open **`../app/app.yaml`** and set:
 - `GENIE_SPACE_ID` → your space id from Notebook 2 (the `…/genie/rooms/<id>` part)
 - `KA_ENDPOINT` → your Knowledge Assistant serving-endpoint name from Notebook 3
   (leave blank to hide the "Ask the docs" tab)
+- `FORECAST_ENDPOINT` → the serving endpoint from **Notebook 4, Step 6**
+  (`abi-demand-forecast`) — powers the Forecast tab's live inference
+- `FORECAST_BASE_YEAR` → the value Notebook 4 printed (matches the model's `trend`)
 - `LAKEBASE_INSTANCE` / `PGAPPDB` → match Notebook 5 (`abi-hackathon-lakebase` / `abi_app`)
 
 You don't hard-code the `PG*` connection values — the app derives the host + user
@@ -175,31 +179,35 @@ resource** (Step 4) is what gives the SP the Lakebase role + network access.
 @@@MD
 ## Step 4 · Create + deploy (fully from the CLI — no UI clicking)
 
-You can attach **all three** resources (Lakebase, the Genie space, **and** the
-Knowledge Assistant endpoint) *at create time* with a JSON body, so there's no
-manual "Edit → Add resource" step. Run this from a terminal where the CLI is
-authenticated, from the repo root:
+You can attach **all four** resources (Lakebase, the Genie space, the Knowledge
+Assistant endpoint, **and** the demand-forecast endpoint) *at create time* with a
+JSON body, so there's no manual "Edit → Add resource" step. Run this from a
+terminal where the CLI is authenticated, from the repo root:
 
 ```bash
 PROFILE=<your-profile>
 ME=$(databricks current-user me -p $PROFILE | jq -r .userName)
 SPACE_ID=<your Genie space id from Notebook 2>
 KA_ENDPOINT=<your Knowledge Assistant endpoint from Notebook 3>
+FORECAST_ENDPOINT=abi-demand-forecast   # from Notebook 4, Step 6
 
 # 1. Create the app WITH its resources in one shot.
 #    - database resource         -> Lakebase role + network access for the SP
 #    - genie_space resource       -> grants the app's SP "Can run" on the space
-#    - serving_endpoint resource  -> grants the SP "Can query" on the assistant
+#    - serving_endpoint resources -> grant the SP "Can query" on the KA assistant
+#                                    and on the demand-forecast endpoint
 cat > /tmp/abi_app_create.json <<EOF
 {
   "name": "abi-genie-app",
-  "description": "ABI Genie + Lakebase + Knowledge Assistant app",
+  "description": "ABI Genie + Lakebase + Knowledge Assistant + forecast app",
   "resources": [
     {"name": "lakebase", "database": {"instance_name": "abi-hackathon-lakebase",
        "database_name": "abi_app", "permission": "CAN_CONNECT_AND_CREATE"}},
     {"name": "genie", "genie_space": {"space_id": "$SPACE_ID", "permission": "CAN_RUN"}},
     {"name": "knowledge_assistant",
-       "serving_endpoint": {"name": "$KA_ENDPOINT", "permission": "CAN_QUERY"}}
+       "serving_endpoint": {"name": "$KA_ENDPOINT", "permission": "CAN_QUERY"}},
+    {"name": "forecast_endpoint",
+       "serving_endpoint": {"name": "$FORECAST_ENDPOINT", "permission": "CAN_QUERY"}}
   ]
 }
 EOF

@@ -263,6 +263,79 @@ display(forecast.sort_values(["month", "segment"]))
 print(f"Wrote {FQ}.demand_forecast ({len(forecast)} rows) — Notebook 5 loads it into Lakebase.")
 
 @@@MD
+## Step 6 · Register a serving copy + create a Model Serving endpoint
+
+The Notebook 7 app does **live what-if inference** — a user types recent volumes
+and sees a prediction instantly. That calls a **Model Serving endpoint**, not
+`fe.score_batch`. Because the app runs on serverless with **no Spark** (so no
+feature-store *lookup*), we register a **plain-sklearn copy** of the same pipeline
+whose inputs are the feature *values* themselves, then stand it up behind a
+**scale-to-zero** endpoint. The `fe.log_model` model above stays the governed
+batch/lineage model; this copy is purely for interactive serving.
+
+@@@IMG:feature_store_flow
+@@@CODE
+# A plain-sklearn copy (no FeatureLookup): its inputs ARE the 7 feature columns,
+# so the app can pass typed features directly. Same algorithm + data as Step 3.
+from mlflow.models.signature import infer_signature
+from mlflow.tracking import MlflowClient
+
+SERVING_MODEL = f"{FQ}.demand_forecaster_serving"
+FORECAST_ENDPOINT = "abi-demand-forecast"
+
+serving_pipe = Pipeline([
+    ("prep", ColumnTransformer(
+        [("seg", OneHotEncoder(handle_unknown="ignore"), ["segment"])], remainder="passthrough")),
+    ("gbr", GradientBoostingRegressor(random_state=42)),
+])
+serving_pipe.fit(feat[MODEL_INPUT], feat["cases"])
+sig = infer_signature(feat[MODEL_INPUT], serving_pipe.predict(feat[MODEL_INPUT]))
+
+mlflow.set_registry_uri("databricks-uc")
+with mlflow.start_run(run_name="demand_gbr_serving"):
+    mlflow.sklearn.log_model(
+        sk_model=serving_pipe, artifact_path="model", signature=sig,
+        input_example=feat[MODEL_INPUT].head(3), registered_model_name=SERVING_MODEL)
+
+SERVING_VERSION = str(max(int(v.version) for v in
+    MlflowClient(registry_uri="databricks-uc").search_model_versions(f"name='{SERVING_MODEL}'")))
+print(f"Registered {SERVING_MODEL} v{SERVING_VERSION}")
+print(f"⇒ Set FORECAST_BASE_YEAR = {BASE_YEAR} in app.yaml (matches the model's `trend` feature).")
+@@@CODE
+# Create (or update) the endpoint — scale-to-zero keeps cost ~$0 when idle.
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedEntityInput
+
+w = WorkspaceClient()
+served = [ServedEntityInput(name="demand-forecaster-serving", entity_name=SERVING_MODEL,
+                            entity_version=SERVING_VERSION, scale_to_zero_enabled=True,
+                            workload_size="Small")]
+if FORECAST_ENDPOINT in [e.name for e in w.serving_endpoints.list()]:
+    w.serving_endpoints.update_config(name=FORECAST_ENDPOINT, served_entities=served)
+    print(f"Updating endpoint '{FORECAST_ENDPOINT}' → v{SERVING_VERSION} (provisioning ~10 min).")
+else:
+    w.serving_endpoints.create(
+        name=FORECAST_ENDPOINT, config=EndpointCoreConfigInput(served_entities=served))
+    print(f"Creating endpoint '{FORECAST_ENDPOINT}' (first build ~10-15 min).")
+@@@CODE
+# Grant the app's service principal CAN_QUERY — best-effort. On a first run the app
+# doesn't exist until Notebook 7, which attaches this endpoint as a resource (that's
+# where the first-run grant happens); this cell just covers re-runs after the app exists.
+from databricks.sdk.service.serving import (
+    ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel)
+try:
+    sp = w.apps.get(name="abi-genie-app").service_principal_client_id
+    ep = w.serving_endpoints.get(name=FORECAST_ENDPOINT)
+    w.serving_endpoints.update_permissions(
+        serving_endpoint_id=ep.id,
+        access_control_list=[ServingEndpointAccessControlRequest(
+            service_principal_name=sp,
+            permission_level=ServingEndpointPermissionLevel.CAN_QUERY)])
+    print(f"Granted CAN_QUERY on '{FORECAST_ENDPOINT}' to app SP {sp}.")
+except Exception as e:  # noqa: BLE001
+    print(f"(App not created yet — Notebook 7 grants CAN_QUERY via the app resource.) {str(e)[:90]}")
+
+@@@MD
 ## ✅ Recap & `# ⇒ OVER TO YOU`
 
 A working, MLflow-tracked demand forecast — with features in a **Unity Catalog
@@ -278,8 +351,9 @@ registered to Unity Catalog. It's intentionally simple — here's where to take 
 - **Point-in-time:** for leak-free training on event data, use a **timeseries
   feature table** with point-in-time lookups.
 - **Validation:** proper **backtesting** (rolling-origin) instead of a single holdout.
-- **Serving:** batch-score on a schedule with `fe.score_batch`, or stand up
-  **Model Serving**; the Notebook 7 app already charts the Delta forecast.
+- **Serving:** Step 6 stands up a **Model Serving** endpoint (`abi-demand-forecast`)
+  for the app's live what-if inference; you can also batch-score on a schedule with
+  `fe.score_batch`. Note the `FORECAST_BASE_YEAR` printed above for Notebook 7.
 - **Ops:** tune hyperparameters, add a UC model **alias** (champion), monitor drift.
 
 **Next → Notebook 5:** stand up **Lakebase** (managed Postgres) for the app's
