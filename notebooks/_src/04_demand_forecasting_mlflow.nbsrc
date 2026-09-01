@@ -1,0 +1,293 @@
+@@@MD
+# 04 · Demand Forecasting with MLflow
+
+**Pre-Hackathon Enablement · Notebook 4 of 7**
+
+This is the deck's **Classical ML with MLflow** pattern (Demand / Freight
+Forecasting). It needs only the synthetic **`orders`** data from **Notebook 1**.
+The forecast it produces is written to a **Delta table** that **Notebook 5**
+(Lakebase) loads and the **Notebook 7** app charts — so this model becomes a live
+tile in the final app.
+
+It also uses **Feature Engineering in Unity Catalog**: the engineered features
+live in a governed **feature table**, and the model is trained + logged through
+the Feature Engineering client, so feature **lineage** and **at-scoring feature
+retrieval** are real — not hand-rolled.
+
+> **This notebook is a runnable *scaffold*, a starting point** to be owned and
+> extended. It forecasts monthly case demand by segment with a simple, honest
+> baseline + model. Look for the **`# ⇒ OVER TO YOU`** markers for where to take it.
+
+@@@IMG:forecast_flow
+
+### What it does
+1. Aggregate `orders` into a **monthly demand** series per segment
+2. Engineer features and store them in a **UC feature table** (`demand_features`)
+3. Build a **training set via `FeatureLookup`**, train a model, **track it in
+   MLflow**, compare against a **baseline** (champion vs challenger), and
+   **`fe.log_model`** it to Unity Catalog
+4. **Score the holdout with `fe.score_batch`** — features auto-joined by key
+5. Produce a **forward forecast** and **write it to Delta** (Notebook 5 + the app read it)
+
+> **Prerequisites:** Notebook 1 completed (the `orders` + `products` tables).
+> Runs on **serverless** or a **Databricks Runtime for ML**. On an ML runtime the
+> `databricks-feature-engineering` library is preinstalled; on serverless, Step 0
+> installs it. Use the **same** `catalog`/`schema` you used in Notebook 1.
+
+@@@MD
+## Step 0 · Install the Feature Engineering client
+
+On **serverless** compute (and plain runtimes) the Feature Engineering client
+isn't preinstalled — install it, then restart Python so the import resolves. On a
+**Databricks Runtime for ML** this is already present and the install is a no-op.
+@@@CODE
+%pip install --quiet databricks-feature-engineering
+dbutils.library.restartPython()
+
+@@@MD
+## Step 1 · Parameters & the demand series
+
+We forecast **monthly total cases by commercial segment** (5 segments). Using
+segment keeps enough history per series; per-SKU forecasting is a natural
+extension (see the end).
+@@@CODE
+import numpy as np
+import pandas as pd
+
+dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema (same as Notebook 1)")
+dbutils.widgets.text("horizon", "3", "Forecast horizon (months)")
+dbutils.widgets.text("test_months", "3", "Holdout months for evaluation")
+CATALOG = dbutils.widgets.get("catalog"); SCHEMA = dbutils.widgets.get("schema")
+FQ = f"{CATALOG}.{SCHEMA}"
+HORIZON = int(dbutils.widgets.get("horizon"))
+TEST_MONTHS = int(dbutils.widgets.get("test_months"))
+
+demand = spark.sql(f"""
+    SELECT date_trunc('month', o.order_date) AS month,
+           p.category AS segment,
+           SUM(o.quantity_cases) AS cases
+    FROM {FQ}.orders o
+    JOIN {FQ}.products p ON o.product_sku = p.product_sku
+    GROUP BY 1, 2
+    ORDER BY 2, 1
+""").toPandas()
+demand["month"] = pd.to_datetime(demand["month"])
+print(f"{demand['segment'].nunique()} segments · "
+      f"{demand['month'].min():%Y-%m} → {demand['month'].max():%Y-%m} · {len(demand)} rows")
+display(demand.head(12))
+
+@@@MD
+## Step 2 · Engineer features → a Unity Catalog feature table
+
+Lag features (previous 1–3 months), a 3-month rolling mean, and calendar signals,
+computed **within each segment** so they never leak across series. Instead of
+keeping them in a local DataFrame, we persist them to a governed **feature table**
+keyed by `(segment, month)` with the **Feature Engineering** client — reusable,
+discoverable, and lineage-tracked.
+@@@CODE
+BASE_YEAR = int(demand["month"].dt.year.min())
+NUM_FEATURES = ["lag_1", "lag_2", "lag_3", "roll_3", "month_num", "trend"]
+
+def add_features(df):
+    df = df.sort_values(["segment", "month"]).copy()
+    for L in (1, 2, 3):
+        df[f"lag_{L}"] = df.groupby("segment")["cases"].shift(L)
+    df["roll_3"] = (df.groupby("segment")["cases"]
+                      .transform(lambda s: s.shift(1).rolling(3).mean()))
+    df["month_num"] = df["month"].dt.month
+    df["trend"] = (df["month"].dt.year - BASE_YEAR) * 12 + df["month"].dt.month
+    return df
+
+feat = add_features(demand).dropna().reset_index(drop=True)
+print(f"{len(feat)} feature rows · keys=(segment, month) · {len(NUM_FEATURES)} features")
+
+@@@CODE
+from databricks.feature_engineering import FeatureEngineeringClient, FeatureLookup
+
+fe = FeatureEngineeringClient()
+FEATURE_TABLE = f"{FQ}.demand_features"
+
+features_sdf = spark.createDataFrame(feat[["segment", "month"] + NUM_FEATURES])
+
+# Idempotent: create the table on first run, upsert (merge) on re-runs.
+try:
+    fe.create_table(
+        name=FEATURE_TABLE,
+        primary_keys=["segment", "month"],
+        df=features_sdf,
+        description="Monthly demand features per segment: lags, 3-mo rolling mean, calendar, trend.",
+    )
+    print(f"Created feature table {FEATURE_TABLE} ({features_sdf.count()} rows).")
+except Exception as e:
+    fe.write_table(name=FEATURE_TABLE, df=features_sdf, mode="merge")
+    print(f"Feature table already existed — merged latest features ({type(e).__name__}).")
+
+@@@MD
+## Step 3 · Train from a `FeatureLookup` training set, log with the FE client
+
+We build the training set by **looking features up from the table by key** — this
+is what records **lineage**. Then we train a scikit-learn **Pipeline** (one-hot the
+segment + gradient boosting), log a **baseline** (persistence: next month = last
+month) and the model, compare them (champion vs challenger), and register the
+winner with `fe.log_model` — so scoring can **auto-join** features.
+
+@@@IMG:feature_store_flow
+
+The key idea: the model **remembers the `FeatureLookup`s** it was trained on. At
+scoring time (Step 4) you pass only the keys, and `fe.score_batch` re-joins the
+exact same features from the table — so training and serving can't drift apart.
+@@@CODE
+import mlflow
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.ensemble import GradientBoostingRegressor
+
+mlflow.set_registry_uri("databricks-uc")
+MODEL_NAME = f"{CATALOG}.{SCHEMA}.demand_forecaster"
+
+# Label spine (keys + label); features come from the table via FeatureLookup.
+label_sdf = spark.createDataFrame(feat[["segment", "month", "cases"]])
+training_set = fe.create_training_set(
+    df=label_sdf,
+    feature_lookups=[FeatureLookup(table_name=FEATURE_TABLE,
+                                   lookup_key=["segment", "month"],
+                                   feature_names=NUM_FEATURES)],
+    label="cases",
+)
+tdf = training_set.load_df().toPandas()
+tdf["month"] = pd.to_datetime(tdf["month"])
+
+# Time-based split (hold out the last few months).
+cutoff = tdf["month"].max() - pd.DateOffset(months=TEST_MONTHS)
+train, test = tdf[tdf["month"] <= cutoff], tdf[tdf["month"] > cutoff]
+MODEL_INPUT = ["segment"] + NUM_FEATURES          # segment is encoded inside the pipeline
+X_train, y_train = train[MODEL_INPUT], train["cases"]
+X_test,  y_test  = test[MODEL_INPUT],  test["cases"]
+print(f"train={len(train)} · test={len(test)} rows (last {TEST_MONTHS} months)")
+
+def mae(y, p):  return float(np.mean(np.abs(np.asarray(y, float) - np.asarray(p, float))))
+def mape(y, p):
+    y, p = np.asarray(y, float), np.asarray(p, float); m = y != 0
+    return float(np.mean(np.abs((y[m] - p[m]) / y[m])) * 100)
+
+@@@CODE
+model = Pipeline([
+    ("prep", ColumnTransformer(
+        [("seg", OneHotEncoder(handle_unknown="ignore"), ["segment"])],
+        remainder="passthrough")),
+    ("gbr", GradientBoostingRegressor(random_state=42)),
+])
+
+# Baseline: persistence (next month = previous month = lag_1).
+base_mae, base_mape = mae(y_test, test["lag_1"]), mape(y_test, test["lag_1"])
+
+with mlflow.start_run(run_name="demand_gbr") as run:
+    model.fit(X_train, y_train)
+    pred = model.predict(X_test)
+    model_mae, model_mape = mae(y_test, pred), mape(y_test, pred)
+
+    mlflow.log_params({"model": "GBR+OneHot", "test_months": TEST_MONTHS,
+                       "n_features": len(NUM_FEATURES)})
+    mlflow.log_metrics({"baseline_mae": base_mae, "baseline_mape": base_mape,
+                        "model_mae": model_mae, "model_mape": model_mape})
+    fe.log_model(                       # packages the FeatureLookup metadata with the model
+        model=model,
+        artifact_path="demand_model",
+        flavor=mlflow.sklearn,
+        training_set=training_set,      # records feature lineage
+        registered_model_name=MODEL_NAME,
+    )
+    run_id = run.info.run_id
+
+print(f"Baseline  MAE={base_mae:,.0f}  MAPE={base_mape:.1f}%")
+print(f"Model     MAE={model_mae:,.0f}  MAPE={model_mape:.1f}%")
+champion = "model" if model_mae < base_mae else "baseline"
+print(f"🏆 Champion: {champion} · registered {MODEL_NAME} · run {run_id}")
+
+@@@MD
+## Step 4 · Score the holdout with `fe.score_batch` (features auto-joined)
+
+This is the payoff of the feature table: at scoring time you pass only the **keys**
+`(segment, month)`, and the Feature Engineering client **joins the features for
+you** from `demand_features`, then runs the model. No feature code at inference.
+@@@CODE
+score_spine = spark.createDataFrame(test[["segment", "month"]])
+scored = fe.score_batch(
+    model_uri=f"runs:/{run_id}/demand_model",
+    df=score_spine,
+).toPandas()
+
+# Sanity: the auto-joined scoring reproduces Step 3's in-memory evaluation.
+chk = scored.merge(test[["segment", "month", "cases"]], on=["segment", "month"])
+print(f"fe.score_batch MAE = {mae(chk['cases'], chk['prediction']):,.0f}  "
+      f"(≈ Step 3 model MAE {model_mae:,.0f})")
+display(scored.sort_values(["month", "segment"]).head(12))
+
+@@@MD
+## Step 5 · Forward forecast
+
+Recursively roll the model forward `HORIZON` months per segment, feeding each
+prediction back in as the next month's lag. These **future** months don't exist
+in the feature table yet, so we build their features in-memory and call the
+trained pipeline directly — feature-store *lookup* is for keys that already
+exist, while recursive multi-step forecasting synthesizes the next row each step.
+@@@CODE
+def forecast_segment(seg, horizon):
+    hist = demand[demand["segment"] == seg].sort_values("month")
+    cases = hist["cases"].tolist()
+    last_month = hist["month"].max()
+    out = []
+    for h in range(1, horizon + 1):
+        m = last_month + pd.DateOffset(months=h)
+        row = {"segment": seg, "lag_1": cases[-1], "lag_2": cases[-2],
+               "lag_3": cases[-3], "roll_3": float(np.mean(cases[-3:])),
+               "month_num": m.month, "trend": (m.year - BASE_YEAR) * 12 + m.month}
+        yhat = float(model.predict(pd.DataFrame([row])[MODEL_INPUT])[0])
+        out.append({"segment": seg, "month": m.date(), "forecast_cases": max(0, round(yhat))})
+        cases.append(yhat)
+    return out
+
+rows = [r for seg in demand["segment"].unique() for r in forecast_segment(seg, HORIZON)]
+forecast = pd.DataFrame(rows)
+display(forecast.sort_values(["month", "segment"]))
+
+@@@CODE
+# Persist the forecast to Delta. Notebook 5 (Lakebase) copies this into Postgres
+# and the Notebook 7 app charts it — so this write is what makes the model show up
+# in the app. Columns: segment, month (date), forecast_cases.
+(spark.createDataFrame(forecast)
+      .write.format("delta").mode("overwrite").option("overwriteSchema", "true")
+      .saveAsTable(f"{FQ}.demand_forecast"))
+print(f"Wrote {FQ}.demand_forecast ({len(forecast)} rows) — Notebook 5 loads it into Lakebase.")
+
+@@@MD
+## ✅ Recap & `# ⇒ OVER TO YOU`
+
+A working, MLflow-tracked demand forecast — with features in a **Unity Catalog
+feature table**, trained through a `FeatureLookup` training set and logged with
+`fe.log_model` (so lineage + at-scoring feature retrieval are real), and
+registered to Unity Catalog. It's intentionally simple — here's where to take it:
+
+- **Granularity:** forecast **per SKU** or **per region**, not just segment.
+- **Models:** try Prophet / SARIMAX / AutoML; add more challengers to the
+  baseline-vs-model comparison.
+- **Features:** add promotions, price, holidays to `demand_features` — the feature
+  table makes them reusable across models and teams.
+- **Point-in-time:** for leak-free training on event data, use a **timeseries
+  feature table** with point-in-time lookups.
+- **Validation:** proper **backtesting** (rolling-origin) instead of a single holdout.
+- **Serving:** batch-score on a schedule with `fe.score_batch`, or stand up
+  **Model Serving**; the Notebook 7 app already charts the Delta forecast.
+- **Ops:** tune hyperparameters, add a UC model **alias** (champion), monitor drift.
+
+**Next → Notebook 5:** stand up **Lakebase** (managed Postgres) for the app's
+transactional state — and load this `demand_forecast` table so the app can chart it.
+
+@@@MD
+---
+### ➡️ Continue to **[Notebook 5 · Lakebase — Managed Postgres for App State](./05_lakebase_setup_and_load)**
+
+Provision Lakebase, create the app's write-back tables, and copy in reference
+data plus this notebook's `demand_forecast`. *(Use the same `catalog`/`schema`.)*

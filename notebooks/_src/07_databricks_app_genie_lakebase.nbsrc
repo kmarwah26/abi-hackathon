@@ -1,0 +1,412 @@
+@@@MD
+# 07 · Databricks App — Genie + Lakebase + Knowledge Assistant + Forecast
+
+**Pre-Hackathon Enablement · Notebook 7 of 7**
+
+The finale: assemble everything into one **Databricks App** — a Streamlit app with
+four tabs that
+
+1. answers **data** questions with the **Genie** space from Notebook 2,
+2. answers **policy / how-to** questions with the **Agent Bricks Knowledge
+   Assistant** from Notebook 3,
+3. charts the **demand forecast** from Notebook 4 (read from Lakebase), and
+4. logs every Genie turn — and runs a review queue — in **Lakebase** (Notebook 5).
+
+### App anatomy (from the deck)
+- **Connected components:** a Databricks App can call a SQL Warehouse, Model
+  Serving, **Agent Bricks**, **Genie**, and the Jobs API. Ours uses **Genie**, a
+  **Knowledge Assistant** serving endpoint, and **Lakebase**.
+- **Hybrid on-behalf-of-user (OBO):** the app calls **Genie** and the **Knowledge
+  Assistant as the signed-in user**, so Unity Catalog enforces *their* permissions
+  (`user_authorization` scopes in `app.yaml` + the forwarded `x-forwarded-access-token`
+  header). **Lakebase** app-state stays on the app's **service principal**, since
+  it's shared state, not per-user data. See the OBO diagram below.
+- Config lives in **`app.yaml`**; resources (Lakebase DB, Genie space, serving
+  endpoint) are attached at create time and injected as env vars / grants.
+
+### Architecture
+
+@@@IMG:app_architecture
+
+The app talks to governed services: the Genie space and the Knowledge Assistant
+answer questions, and Lakebase durably records each turn (and serves the forecast
+the app charts).
+
+@@@IMG:request_flow
+
+### Who the app runs as (hybrid OBO)
+
+Not every call uses the same identity. **Genie** and the **Knowledge Assistant**
+run **on behalf of the signed-in user** — Databricks forwards the user's token in
+the `x-forwarded-access-token` header and the app builds a user-scoped client from
+it, so Unity Catalog enforces each person's own permissions. **Lakebase** app-state
+(action items, conversation logs, the forecast) runs as the app's **service
+principal**, because that state is shared across everyone, not per-user.
+
+@@@IMG:app_auth_obo
+
+> For OBO to take effect, an admin must **enable user authorization** for the app,
+> and each **end user** needs `CAN_RUN` on the Genie space, `CAN_QUERY` on the KA
+> endpoint, and `SELECT` on the underlying tables. Running locally there's no
+> forwarded token, so the app falls back to the service principal and flags it.
+
+> **Prerequisites:** Notebooks 1–5 done (data, Genie, Knowledge Assistant,
+> forecast, Lakebase). Databricks CLI ≥ 0.229.0 authenticated to your FE-VM
+> workspace. The app source lives in the sibling **`../app/`** folder (`app.py`,
+> `app.yaml`, `requirements.txt`, `README.md`).
+
+@@@MD
+## Step 1 · The integration code, explained
+
+The whole app is in `../app/app.py` — one tab per service. Four pieces matter.
+
+**A · Ask Genie (Conversation API).** Same calls you validated in Notebook 2 —
+start a conversation on the first turn, continue it after that so Genie keeps
+context:
+```python
+from databricks.sdk import WorkspaceClient
+w = WorkspaceClient()  # in an App, auto-auths as the service principal
+
+def ask_genie(question, conversation_id=None):
+    if conversation_id:
+        msg = w.genie.create_message_and_wait(SPACE_ID, conversation_id, question)
+    else:
+        msg = w.genie.start_conversation_and_wait(SPACE_ID, question)
+    # msg.attachments carry the text answer and/or the generated SQL + results
+    ...
+```
+
+**B · Ask the Knowledge Assistant (Notebook 3).** The assistant is a **serving
+endpoint**; query it with the SDK's OpenAI-compatible client — no extra auth to
+wire up in the App:
+```python
+def ask_ka(question):
+    client = w.serving_endpoints.get_open_ai_client()   # pre-authed as the SP
+    resp = client.chat.completions.create(
+        model=KA_ENDPOINT, messages=[{"role": "user", "content": question}])
+    return resp.choices[0].message.content   # grounded, cited answer from the docs
+```
+
+**C · Show the forecast (Notebook 4).** No recompute at request time — the app
+just reads the forecast Lakebase copied from Delta and charts it:
+```python
+df = pd.read_sql("SELECT segment, month, forecast_cases FROM app.demand_forecast", conn)
+st.line_chart(df.pivot_table(index="month", columns="segment", values="forecast_cases"))
+```
+
+**D · Log to Lakebase.** OAuth token as the Postgres password, one INSERT per
+turn — and logging failures must never break the chat:
+```python
+INSERT INTO app.conversations
+  (session_id, user_email, question, answer_text, generated_sql,
+   result_row_count, conversation_id, message_id, created_at)
+VALUES (...);
+```
+
+**Dual-mode auth** is what lets the identical file run locally *and* in the App:
+`WorkspaceClient()` uses your CLI profile locally and the injected SP in the App;
+the Lakebase host/user are derived from the instance and the OAuth token is minted
+in-app.
+
+@@@MD
+## Step 2 · Confirm the Lakebase tables exist
+
+Notebook 5 created `app.conversations` (and copied in `app.demand_forecast`).
+Re-run this to confirm they're there (and create `conversations` if you skipped
+ahead). Set the widgets to match Notebook 5.
+@@@CODE
+%pip install --quiet --upgrade databricks-sdk psycopg2-binary sqlalchemy
+dbutils.library.restartPython()
+
+@@@CODE
+import uuid
+from urllib.parse import quote_plus
+from databricks.sdk import WorkspaceClient
+from sqlalchemy import create_engine, text
+
+dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance name")
+dbutils.widgets.text("app_db", "abi_app", "Lakebase logical database")
+INSTANCE = dbutils.widgets.get("lakebase_instance")
+APP_DB = dbutils.widgets.get("app_db")
+
+w = WorkspaceClient()
+inst = w.database.get_database_instance(name=INSTANCE)
+HOST = inst.read_write_dns
+PGUSER = w.current_user.me().user_name
+
+def make_engine(dbname):
+    cred = w.database.generate_database_credential(request_id=str(uuid.uuid4()), instance_names=[INSTANCE])
+    url = (f"postgresql+psycopg2://{quote_plus(PGUSER)}:{quote_plus(cred.token)}"
+           f"@{HOST}:5432/{dbname}?sslmode=require")
+    return create_engine(url, pool_pre_ping=True)
+
+engine = make_engine(APP_DB)
+with engine.begin() as c:
+    c.execute(text("""
+        CREATE TABLE IF NOT EXISTS app.conversations (
+            id SERIAL PRIMARY KEY, session_id TEXT NOT NULL, user_email TEXT,
+            question TEXT NOT NULL, answer_text TEXT, generated_sql TEXT,
+            result_row_count INT, conversation_id TEXT, message_id TEXT,
+            created_at TIMESTAMP DEFAULT NOW())"""))
+    n = c.execute(text("SELECT COUNT(*) FROM app.conversations")).scalar()
+print(f"app.conversations ready ({n} rows so far).")
+
+# Confirm the forecast the app charts is loaded (Notebook 5 copied it in).
+try:
+    with engine.connect() as c:
+        fc = c.execute(text("SELECT COUNT(*) FROM app.demand_forecast")).scalar()
+    print(f"app.demand_forecast ready ({fc} rows).")
+except Exception:
+    print("app.demand_forecast not found — run Notebook 4 then Notebook 5 to load it.")
+
+@@@MD
+## Step 3 · Configure the app
+
+Open **`../app/app.yaml`** and set:
+- `GENIE_SPACE_ID` → your space id from Notebook 2 (the `…/genie/rooms/<id>` part)
+- `KA_ENDPOINT` → your Knowledge Assistant serving-endpoint name from Notebook 3
+  (leave blank to hide the "Ask the docs" tab)
+- `LAKEBASE_INSTANCE` / `PGAPPDB` → match Notebook 5 (`abi-hackathon-lakebase` / `abi_app`)
+
+You don't hard-code the `PG*` connection values — the app derives the host + user
+from the Lakebase instance and mints its own OAuth token. Attaching the **Database
+resource** (Step 4) is what gives the SP the Lakebase role + network access.
+
+@@@MD
+## Step 4 · Create + deploy (fully from the CLI — no UI clicking)
+
+You can attach **all three** resources (Lakebase, the Genie space, **and** the
+Knowledge Assistant endpoint) *at create time* with a JSON body, so there's no
+manual "Edit → Add resource" step. Run this from a terminal where the CLI is
+authenticated, from the repo root:
+
+```bash
+PROFILE=<your-profile>
+ME=$(databricks current-user me -p $PROFILE | jq -r .userName)
+SPACE_ID=<your Genie space id from Notebook 2>
+KA_ENDPOINT=<your Knowledge Assistant endpoint from Notebook 3>
+
+# 1. Create the app WITH its resources in one shot.
+#    - database resource         -> Lakebase role + network access for the SP
+#    - genie_space resource       -> grants the app's SP "Can run" on the space
+#    - serving_endpoint resource  -> grants the SP "Can query" on the assistant
+cat > /tmp/abi_app_create.json <<EOF
+{
+  "name": "abi-genie-app",
+  "description": "ABI Genie + Lakebase + Knowledge Assistant app",
+  "resources": [
+    {"name": "lakebase", "database": {"instance_name": "abi-hackathon-lakebase",
+       "database_name": "abi_app", "permission": "CAN_CONNECT_AND_CREATE"}},
+    {"name": "genie", "genie_space": {"space_id": "$SPACE_ID", "permission": "CAN_RUN"}},
+    {"name": "knowledge_assistant",
+       "serving_endpoint": {"name": "$KA_ENDPOINT", "permission": "CAN_QUERY"}}
+  ]
+}
+EOF
+databricks apps create --json @/tmp/abi_app_create.json -p $PROFILE   # waits for compute ACTIVE
+
+# 2. Sync the app source, then deploy.
+databricks sync ./app /Workspace/Users/$ME/abi-genie-app-src \
+  --exclude __pycache__ --exclude .venv -p $PROFILE
+databricks apps deploy abi-genie-app \
+  --source-code-path /Workspace/Users/$ME/abi-genie-app-src -p $PROFILE
+
+# 3. Get the URL (view logs at <url>/logz).
+databricks apps get abi-genie-app -p $PROFILE
+```
+
+> The `lakebase` + `genie` resources are the ones tested to `RUNNING` earlier; the
+> `serving_endpoint` resource is the standard way to grant the SP `Can query` on
+> the assistant. If your CLI version rejects the `serving_endpoint` resource key,
+> drop it here and add the endpoint in the app editor (Edit → Resources), or grant
+> `CAN_QUERY` programmatically in Step 5d.
+
+@@@MD
+## Step 5 · Grant the app's service principal data access
+
+The app runs as its **own service principal (SP)**, so grant that SP:
+1. **Unity Catalog** — `SELECT` on the 4 curated tables (Genie runs SQL as the SP).
+2. **Lakebase Postgres** — `INSERT` on `app.conversations`, full CRUD on
+   `app.action_items`, and `SELECT` on `app.demand_forecast` (the tables are owned
+   by *you*, not the SP), plus the SERIAL sequences.
+3. **SQL warehouse** — `CAN_USE` on the warehouse the Genie space runs on. Easy to
+   miss: the `CAN_RUN` genie resource lets the SP *call* Genie, but Genie executes
+   its SQL on a warehouse the SP must be allowed to use, or you get
+   *"not authorized to use ... this SQL Endpoint."*
+4. **Knowledge Assistant endpoint** — `CAN_QUERY` (also set by the
+   `serving_endpoint` resource in Step 4; 5d below makes it explicit).
+
+All of these are automated below — the SP id is fetched from the app, no copy-paste.
+@@@CODE
+# 5a · Unity Catalog grants (run in this notebook; uses spark).
+from databricks.sdk import WorkspaceClient
+w = WorkspaceClient()
+app = w.apps.get(name="abi-genie-app")
+SP = app.service_principal_client_id
+print(f"App SP: {SP}  ({app.service_principal_name})")
+
+dbutils.widgets.text("catalog", "serverless_razks1_catalog", "Unity Catalog catalog")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema")
+CATALOG = dbutils.widgets.get("catalog"); SCHEMA = dbutils.widgets.get("schema")
+
+spark.sql(f"GRANT USE CATALOG ON CATALOG {CATALOG} TO `{SP}`")
+spark.sql(f"GRANT USE SCHEMA ON SCHEMA {CATALOG}.{SCHEMA} TO `{SP}`")
+for t in ["products", "distributors", "orders", "shipments"]:
+    spark.sql(f"GRANT SELECT ON TABLE {CATALOG}.{SCHEMA}.{t} TO `{SP}`")
+print(f"Granted SELECT on 4 tables to the app SP.")
+
+@@@CODE
+# 5b · Lakebase Postgres grants (uses the `engine` from Step 2).
+# The SP's Postgres role name IS its client id.
+with engine.begin() as c:
+    c.execute(text(f'GRANT USAGE ON SCHEMA app TO "{SP}"'))
+    c.execute(text(f'GRANT SELECT, INSERT ON app.conversations TO "{SP}"'))
+    # action_items is read/written by the app's "Action items" tab — full CRUD.
+    c.execute(text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON app.action_items TO "{SP}"'))
+    # demand_forecast is read-only for the Forecast tab.
+    c.execute(text(f'GRANT SELECT ON app.demand_forecast TO "{SP}"'))
+    c.execute(text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO "{SP}"'))
+print(f"Granted conversation + action-item + forecast access to the app SP.")
+
+@@@CODE
+# 5c · SQL-warehouse grant — the SP must be allowed to USE the warehouse the
+# Genie space runs its SQL on (otherwise: "not authorized to use this SQL Endpoint").
+from databricks.sdk.service import sql as sqlsvc
+
+dbutils.widgets.text("genie_space_id", "", "Genie space id (from Notebook 2)")
+GENIE_SPACE_ID = dbutils.widgets.get("genie_space_id").strip()
+assert GENIE_SPACE_ID, "Set the genie_space_id widget (from Notebook 2's output)."
+
+wh_id = w.genie.get_space(GENIE_SPACE_ID).warehouse_id
+w.warehouses.update_permissions(  # additive — keeps existing ACLs
+    warehouse_id=wh_id,
+    access_control_list=[sqlsvc.WarehouseAccessControlRequest(
+        service_principal_name=SP,
+        permission_level=sqlsvc.WarehousePermissionLevel.CAN_USE)],
+)
+print(f"Granted CAN_USE on warehouse {wh_id} to the app SP.")
+
+@@@CODE
+# 5d · Knowledge Assistant grant — the SP must be able to query the assistant's
+# serving endpoint (the "Ask the docs" tab). Redundant if the Step 4
+# serving_endpoint resource applied, but explicit and safe to re-run.
+from databricks.sdk.service.serving import (
+    ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel)
+
+dbutils.widgets.text("ka_endpoint", "", "Knowledge Assistant endpoint (from Notebook 3)")
+KA_ENDPOINT = dbutils.widgets.get("ka_endpoint").strip()
+if not KA_ENDPOINT:
+    print("Skipped — set the ka_endpoint widget to grant CAN_QUERY on the assistant.")
+else:
+    ep = w.serving_endpoints.get(name=KA_ENDPOINT)
+    w.serving_endpoints.update_permissions(  # additive — keeps existing ACLs
+        serving_endpoint_id=ep.id,
+        access_control_list=[ServingEndpointAccessControlRequest(
+            service_principal_name=SP,
+            permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
+    )
+    print(f"Granted CAN_QUERY on '{KA_ENDPOINT}' to the app SP.")
+
+@@@MD
+## Step 6 · Use it, then inspect what was logged
+
+Open the app URL and try all four tabs — **Ask Genie** (data), **Ask the docs**
+(Knowledge Assistant), **Forecast** (the chart from Lakebase), and **Action items**
+(the review queue). Then run this cell to see the conversations the app wrote to
+Lakebase — proof the whole loop works end to end.
+@@@CODE
+import pandas as pd
+with engine.connect() as c:
+    df = pd.read_sql(
+        "SELECT created_at, user_email, question, result_row_count, "
+        "left(generated_sql, 80) AS sql_preview "
+        "FROM app.conversations ORDER BY created_at DESC LIMIT 20",
+        c,
+    )
+print(f"{len(df)} logged conversation turns")
+display(df) if 'display' in dir() else print(df.to_string(index=False))
+
+@@@MD
+## Step 7 · Auto-shutdown (cost control) 💸
+
+Apps and Lakebase **bill while running** and have no built-in TTL. So schedule a
+**one-shot job** that stops both after a few hours. It runs the sibling
+`_stop_resources` notebook via a **Quartz cron pinned to a single future minute**
+(so it fires exactly once). Adjust `shutdown_after_hours`.
+
+Need it sooner, or want to keep going? Stop now, or delete the job:
+```bash
+databricks apps stop abi-genie-app -p <profile>
+databricks database update-database-instance abi-hackathon-lakebase "stopped" --stopped -p <profile>
+# databricks jobs delete <job_id>   # cancel the scheduled auto-shutdown
+```
+@@@CODE
+import datetime as dt, os
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service import jobs
+w = WorkspaceClient()
+
+dbutils.widgets.text("app_name", "abi-genie-app", "Databricks App name")
+dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance")
+dbutils.widgets.text("shutdown_after_hours", "3", "Auto-shutdown after N hours")
+APP = dbutils.widgets.get("app_name").strip()
+INSTANCE = dbutils.widgets.get("lakebase_instance").strip()
+N = float(dbutils.widgets.get("shutdown_after_hours"))
+
+# Locate the sibling _stop_resources notebook (same folder as this one).
+nb_path = (dbutils.notebook.entry_point.getDbutils().notebook()
+           .getContext().notebookPath().get())
+stop_nb = os.path.dirname(nb_path) + "/_stop_resources"
+
+# Quartz cron pinned to one future minute (UTC) => fires once.
+target = dt.datetime.utcnow() + dt.timedelta(hours=N)
+cron = f"0 {target.minute} {target.hour} {target.day} {target.month} ? {target.year}"
+print(f"Auto-shutdown ~{target:%Y-%m-%d %H:%M} UTC  (cron: {cron})")
+
+# Per-user job name so several participants don't collide.
+me = w.current_user.me().user_name.split("@")[0].replace(".", "_")
+JOB_NAME = f"abi-autoshutdown-{me}"
+
+# Recreate if it already exists.
+for j in w.jobs.list():
+    if j.settings and j.settings.name == JOB_NAME:
+        w.jobs.delete(job_id=j.job_id)
+
+created = w.jobs.create(
+    name=JOB_NAME,
+    tasks=[jobs.Task(
+        task_key="stop",
+        notebook_task=jobs.NotebookTask(
+            notebook_path=stop_nb,
+            base_parameters={"app_name": APP, "lakebase_instance": INSTANCE},
+        ),
+    )],
+    schedule=jobs.CronSchedule(quartz_cron_expression=cron, timezone_id="UTC"),
+)
+print(f"✔ Scheduled auto-shutdown job '{JOB_NAME}' (id {created.job_id}).")
+print(f"  Cancel with:  databricks jobs delete {created.job_id}")
+
+@@@MD
+## ✅ Recap — and how this maps to the hackathon
+
+You shipped a governed, full-stack pattern end to end:
+
+- **Notebook 1** → curated Delta tables + a docs **Volume** (one governed copy)
+- **Notebook 2** → a **Genie agent** made accurate by metadata (comments,
+  constraints, example SQL)
+- **Notebook 3** → an **Agent Bricks Knowledge Assistant** over the docs (cited answers)
+- **Notebook 4** → a **demand forecast** (MLflow) written to Delta
+- **Notebook 5** → **Lakebase** for transactional app state (and the forecast copy)
+- **Notebook 6** → **Genie Code** for governed, AI-assisted development
+- **Notebook 7** → this **Databricks App** wiring **Genie + Knowledge Assistant +
+  forecast + Lakebase** into one UI, running as a service principal
+
+**This is a reusable MVP pattern.** Several hackathon tracks are variations on it:
+- *EPR Reporting* → Genie over curated reporting tables
+- *Policy / SOP Q&A* → a Knowledge Assistant over a docs Volume
+- *Demand / Freight forecasting* → an MLflow model surfaced in the app
+- *Lease / Contract Management, review queues* → Lakebase-backed app state + approvals
+- *DPM / Sigma replacement* → a Databricks App as the product surface
+
+Swap the dataset, the Genie space, the docs, and the model — keep the skeleton.
+**That completes the enablement series. You're ready to build.** 🍺

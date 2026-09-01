@@ -1,0 +1,372 @@
+@@@MD
+# 02 · Genie Agent + Metadata Best Practices
+
+**Pre-Hackathon Enablement · Notebook 2 of 7**
+
+A Genie space is only as good as the **metadata** behind it. This notebook turns
+the tables from Notebook 1 into a governed **Genie agent**: rich comments,
+constraints, and certified example SQL — then creates the Genie space *as code*
+and validates it.
+
+@@@IMG:series_overview
+
+### Genie in one slide (from the enablement deck)
+- **Curate a small set of tables — five or fewer to start.** We use exactly 4.
+- **Prefer column descriptions and SQL examples over free-text instructions.**
+- **Genie answers questions about *results*. It is not the query engine** — it
+  generates governed SQL against your curated tables.
+
+@@@IMG:genie_metadata
+
+### What you'll do
+1. Add rich **table & column comments** (the descriptions Genie reads)
+2. Add **primary/foreign key constraints** (informational — they teach Genie the joins)
+3. Assemble & verify **certified example SQL**
+4. **Create the Genie space as code** (`create_space`)
+5. **Validate** it via the Conversation API
+
+> **Prerequisites:** Notebook 1 completed (the 4 Delta tables). Use the **same**
+> `catalog`/`schema` you used there.
+
+> ### 👥 Sharing a workspace? Use your own `schema` (matching Notebook 1). The
+> Genie space is named per-schema, so everyone gets their own.
+
+@@@MD
+## Step 0 · Upgrade the SDK
+
+Genie **space creation** (`w.genie.create_space`) and the **Conversation API**
+need a recent `databricks-sdk` — newer than the cluster default. Upgrade once at
+the top. (`restartPython` clears state, so run this **first**.)
+@@@CODE
+%pip install --quiet --upgrade databricks-sdk
+dbutils.library.restartPython()
+
+@@@MD
+## Step 1 · Parameters
+
+Point at the catalog/schema you created in Notebook 1.
+@@@CODE
+dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema (same as Notebook 1)")
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
+FQ = f"{CATALOG}.{SCHEMA}"
+spark.sql(f"USE {FQ}")
+print(f"Curating Genie metadata for: {FQ}")
+
+@@@MD
+## Step 2 · Table & column descriptions (what Genie reads)
+
+The single biggest driver of Genie accuracy. Table comments say *what each table
+is for*; column comments pin down **units, meaning, and allowed values** — a
+"case" vs a "unit", what `on_time` means, the enum values of `status`.
+@@@CODE
+# Table-level comments.
+spark.sql(f"COMMENT ON TABLE {FQ}.products IS "
+          "'Product catalogue. One row per sellable SKU (an Anheuser-Busch brand in a "
+          "specific package). Use for brand, segment, package, cost and list-price questions.'")
+spark.sql(f"COMMENT ON TABLE {FQ}.distributors IS "
+          "'Distributors we sell to. One row per distributor with US region, state, city, "
+          "commercial tier and credit limit. Use to segment sales by geography or tier.'")
+spark.sql(f"COMMENT ON TABLE {FQ}.orders IS "
+          "'Sales orders. One row per distributor order line for a product, measured in cases. "
+          "Grain: order line. Use for volume, revenue and order-status questions.'")
+spark.sql(f"COMMENT ON TABLE {FQ}.shipments IS "
+          "'Outbound shipments, one per fulfilled order. Origin DC, carrier, freight cost, "
+          "distance and on-time delivery. Use for logistics and freight questions.'")
+print("Table comments set.")
+
+@@@CODE
+COLUMN_COMMENTS = {
+    "products": {
+        "product_sku": "Unique product identifier (primary key). Format 'SKU-####'.",
+        "product_name": "Product name: brand + package, e.g. 'Bud Light 12oz Can 6-pack'.",
+        "brand": "Anheuser-Busch brand, e.g. 'Budweiser', 'Michelob Ultra', 'Stella Artois'.",
+        "category": "Commercial segment. One of: Value, Core, Premium, Craft & Import, Non-Alcoholic.",
+        "package_type": "Retail package/format, e.g. '12oz Can 6-pack', 'Half Keg'.",
+        "units_per_case": "Number of retail packages in one case (the selling unit).",
+        "unit_cost_usd": "Our cost per case, in USD.",
+        "list_price_usd": "Standard list price per case charged to distributors, in USD.",
+    },
+    "distributors": {
+        "distributor_id": "Unique distributor identifier (primary key). Format 'D####'.",
+        "distributor_name": "Distributor company name.",
+        "region": "US sales region. One of: Northeast, Southeast, Midwest, West, Southwest.",
+        "state": "US state abbreviation, e.g. 'CA'.",
+        "city": "Primary city of the distributor.",
+        "tier": "Commercial tier / account size. One of: Premier, Core, Independent.",
+        "credit_limit_usd": "Approved credit limit for the distributor, in USD.",
+        "onboarded_date": "Date the distributor was onboarded.",
+    },
+    "orders": {
+        "order_id": "Unique order-line identifier (primary key). Format 'O######'.",
+        "order_date": "Date the order was placed.",
+        "distributor_id": "Distributor that placed the order (foreign key to distributors).",
+        "product_sku": "Product ordered (foreign key to products).",
+        "quantity_cases": "Number of cases ordered. 'Cases' is the standard sales volume unit.",
+        "unit_price_usd": "Actual price per case for this order, in USD (may differ from list price).",
+        "order_value_usd": "Total order value USD = quantity_cases * unit_price_usd. Use for revenue/sales.",
+        "channel": "Sales channel. One of: Off-Premise (retail/store), On-Premise (bar/restaurant).",
+        "status": "Order status. One of: Delivered, In Transit, Pending, Cancelled.",
+    },
+    "shipments": {
+        "shipment_id": "Unique shipment identifier (primary key). Format 'S######'.",
+        "order_id": "Order fulfilled by this shipment (foreign key to orders).",
+        "origin_dc": "Distribution center the shipment left from, e.g. 'Chicago DC'.",
+        "dest_region": "Destination US region (matches the distributor's region).",
+        "carrier": "Freight carrier that moved the shipment.",
+        "ship_date": "Date the shipment left the DC.",
+        "requested_delivery_date": "Delivery date requested/promised.",
+        "actual_delivery_date": "Actual delivery date. Null if not yet delivered.",
+        "distance_miles": "Shipping distance in miles.",
+        "freight_cost_usd": "Total freight cost for the shipment, in USD.",
+        "on_time": "True if actual_delivery_date <= requested_delivery_date. 'On-time' = this flag is true.",
+        "status": "Shipment status. One of: Delivered, In Transit.",
+    },
+}
+for table, cols in COLUMN_COMMENTS.items():
+    for col, comment in cols.items():
+        safe = comment.replace("'", "''")
+        spark.sql(f"ALTER TABLE {FQ}.{table} ALTER COLUMN {col} COMMENT '{safe}'")
+    print(f"  {table}: {len(cols)} column comments set")
+print("Column comments done.")
+
+@@@MD
+## Step 3 · Keys & constraints (teach Genie the joins)
+
+Databricks supports **informational** primary/foreign key constraints. Not
+enforced at write time, but Genie (and the optimizer) use them to know how tables
+relate — so it joins correctly without you spelling it out.
+@@@CODE
+# Primary keys require NOT NULL columns.
+for table, col in [("products","product_sku"),("distributors","distributor_id"),
+                   ("orders","order_id"),("shipments","shipment_id")]:
+    spark.sql(f"ALTER TABLE {FQ}.{table} ALTER COLUMN {col} SET NOT NULL")
+
+def add_constraint(table, ddl):
+    try:
+        spark.sql(f"ALTER TABLE {FQ}.{table} ADD CONSTRAINT {ddl}")
+    except Exception as e:
+        print(f"  ({table}: {e})")   # already exists on re-run — fine
+
+add_constraint("products",     "pk_products PRIMARY KEY (product_sku)")
+add_constraint("distributors", "pk_distributors PRIMARY KEY (distributor_id)")
+add_constraint("orders",       "pk_orders PRIMARY KEY (order_id)")
+add_constraint("shipments",    "pk_shipments PRIMARY KEY (shipment_id)")
+add_constraint("orders", f"fk_orders_distributor FOREIGN KEY (distributor_id) REFERENCES {FQ}.distributors")
+add_constraint("orders", f"fk_orders_product FOREIGN KEY (product_sku) REFERENCES {FQ}.products")
+add_constraint("shipments", f"fk_shipments_order FOREIGN KEY (order_id) REFERENCES {FQ}.orders")
+print("Constraints applied.")
+
+@@@MD
+## Step 4 · Certified example SQL
+
+Example queries are the most effective way to steer Genie — each teaches a
+pattern (the right joins, filters, metric). We verify they run, then feed them
+straight into the Genie space in Step 5 as `example_question_sqls`.
+@@@CODE
+EXAMPLE_QUERIES = {
+    "Top products by case volume in a region":
+        f"""SELECT p.product_name, SUM(o.quantity_cases) AS total_cases
+FROM {FQ}.orders o
+JOIN {FQ}.products p ON o.product_sku = p.product_sku
+JOIN {FQ}.distributors d ON o.distributor_id = d.distributor_id
+WHERE d.region = 'West' AND o.status = 'Delivered'
+GROUP BY p.product_name ORDER BY total_cases DESC LIMIT 10""",
+
+    "Monthly revenue trend by segment":
+        f"""SELECT date_trunc('month', o.order_date) AS month, p.category,
+       ROUND(SUM(o.order_value_usd), 2) AS revenue_usd
+FROM {FQ}.orders o JOIN {FQ}.products p ON o.product_sku = p.product_sku
+WHERE o.status = 'Delivered'
+GROUP BY 1, 2 ORDER BY 1, 2""",
+
+    "On-time delivery rate by carrier":
+        f"""SELECT carrier,
+       ROUND(100.0 * SUM(CASE WHEN on_time THEN 1 ELSE 0 END) / COUNT(*), 1) AS on_time_pct,
+       COUNT(*) AS delivered_shipments
+FROM {FQ}.shipments WHERE status = 'Delivered'
+GROUP BY carrier ORDER BY on_time_pct DESC""",
+
+    "Distributors with the most late shipments":
+        f"""SELECT d.distributor_name, d.region, COUNT(*) AS late_shipments
+FROM {FQ}.shipments s
+JOIN {FQ}.orders o ON s.order_id = o.order_id
+JOIN {FQ}.distributors d ON o.distributor_id = d.distributor_id
+WHERE s.status = 'Delivered' AND s.on_time = false
+GROUP BY d.distributor_name, d.region ORDER BY late_shipments DESC LIMIT 10""",
+
+    "Average freight cost per case shipped":
+        f"""SELECT s.carrier,
+       ROUND(SUM(s.freight_cost_usd) / SUM(o.quantity_cases), 2) AS freight_per_case
+FROM {FQ}.shipments s JOIN {FQ}.orders o ON s.order_id = o.order_id
+GROUP BY s.carrier ORDER BY freight_per_case""",
+}
+for title, sql in EXAMPLE_QUERIES.items():
+    try:
+        print(f"[OK {spark.sql(sql).count():>4} rows] {title}")
+    except Exception as e:
+        print(f"[FAILED] {title}: {e}")
+
+@@@MD
+## Step 5 · Create the Genie space — as code
+
+Genie spaces can be created programmatically with `w.genie.create_space(...)`
+(and `databricks genie create-space`) — so **your space is reproducible**, not a
+pile of clicks. The one fiddly input is **`serialized_space`**, a JSON string
+describing the space. Verified-working shape:
+
+```json
+{
+  "version": 2,
+  "data_sources": { "tables": [ {"identifier": "cat.schema.table"} ] },
+  "instructions": {
+    "text_instructions":     [ {"id": "<32-hex uuid>", "content": ["line", ...]} ],
+    "example_question_sqls": [ {"id": "<32-hex uuid>", "question": ["..."], "sql": ["..."]} ]
+  }
+}
+```
+
+Three rules the API enforces (all handled below):
+- **`data_sources.tables` must be sorted** by `identifier`.
+- Every instruction/example needs a unique **`id`: lowercase 32-hex UUID, no
+  hyphens** (`uuid.uuid4().hex`).
+- **`text_instructions` and `example_question_sqls` must each be sorted by `id`.**
+
+The space is named **per schema**, so several participants on one workspace each
+get their own.
+@@@CODE
+import json, uuid
+from databricks.sdk import WorkspaceClient
+w = WorkspaceClient()
+
+SPACE_TITLE = f"ABI Beverage Supply Chain — {SCHEMA}"
+
+# Pick a SQL warehouse (prefer a running one; else the first available).
+whs = list(w.warehouses.list())
+assert whs, "No SQL warehouse found — create a serverless warehouse first."
+wh = next((x for x in whs if str(x.state) == "RUNNING"), whs[0])
+print(f"Using warehouse: {wh.name} ({wh.id})")
+
+# The API requires these lists SORTED BY id, so build then sort.
+text_instructions = [{
+    "id": uuid.uuid4().hex,
+    "content": [
+        "A 'case' is the sales unit; 'volume' means SUM(orders.quantity_cases).",
+        "'Revenue' or 'sales value' = SUM(orders.order_value_usd).",
+        "'On-time' means shipments.on_time is true; late means it is false.",
+        "'Segment' means products.category (Value, Core, Premium, Craft & Import, Non-Alcoholic).",
+        "Regions are: Northeast, Southeast, Midwest, West, Southwest.",
+    ],
+}]
+example_question_sqls = [
+    {"id": uuid.uuid4().hex, "question": [title], "sql": [sql]}
+    for title, sql in EXAMPLE_QUERIES.items()
+]
+text_instructions.sort(key=lambda e: e["id"])
+example_question_sqls.sort(key=lambda e: e["id"])
+
+serialized = {
+    "version": 2,
+    # tables must be sorted by identifier
+    "data_sources": {"tables": [{"identifier": t} for t in
+                                sorted(f"{FQ}.{x}" for x in ["products", "distributors", "orders", "shipments"])]},
+    "instructions": {
+        "text_instructions": text_instructions,
+        "example_question_sqls": example_question_sqls,
+    },
+}
+
+# Idempotent: reuse an existing space with the same (per-schema) title.
+existing = next((s for s in (w.genie.list_spaces().spaces or []) if s.title == SPACE_TITLE), None)
+if existing:
+    GENIE_SPACE_ID = existing.space_id
+    print(f"Reusing existing space '{SPACE_TITLE}': {GENIE_SPACE_ID}")
+else:
+    space = w.genie.create_space(
+        warehouse_id=wh.id, serialized_space=json.dumps(serialized),
+        title=SPACE_TITLE,
+        description="Curated beverage supply-chain Q&A (pre-hackathon enablement).",
+    )
+    GENIE_SPACE_ID = space.space_id
+    print(f"Created Genie space: {GENIE_SPACE_ID}")
+
+print(f"\nSpace URL: {w.config.host}/genie/rooms/{GENIE_SPACE_ID}")
+print(">>> Save this GENIE_SPACE_ID — Notebook 7's app needs it. <<<")
+
+@@@MD
+### Fallbacks (if `create_space` isn't available or the payload drifts)
+
+`serialized_space` is version-sensitive, so keep these in your back pocket:
+- **Clone an existing space:** `w.genie.get_space(id, include_serialized_space=True)`
+  → reuse the `.serialized_space` shape, swap in your table identifiers.
+- **Create in the UI (2 min):** Genie → **New** → add the 4 tables → pick a
+  serverless warehouse → paste the Step 4 example SQL under **Instructions** →
+  Save → copy the id from the URL `…/genie/rooms/<space-id>`.
+
+@@@MD
+## Step 6 · Validate via the Conversation API
+
+Query the space with the **Genie Conversation API** — the same calls the app in
+Notebook 7 makes. `GENIE_SPACE_ID` comes from Step 5.
+
+@@@IMG:genie_conversation
+
+Each turn returns a **message** with **attachments**: a text answer and,
+when Genie ran SQL, a `query` attachment you fetch results for. Passing the
+`conversation_id` back on the next call is what lets Genie answer follow-ups
+*in context* — you'll see that in the second cell below.
+@@@CODE
+if "GENIE_SPACE_ID" not in dir() or not GENIE_SPACE_ID:
+    dbutils.widgets.text("genie_space_id", "", "Genie space id (from the space URL)")
+    GENIE_SPACE_ID = dbutils.widgets.get("genie_space_id").strip()
+assert GENIE_SPACE_ID, "No GENIE_SPACE_ID — run Step 5 or set the genie_space_id widget."
+
+from databricks.sdk import WorkspaceClient
+w = WorkspaceClient()
+
+def ask_genie(question, conversation_id=None):
+    if conversation_id:
+        msg = w.genie.create_message_and_wait(GENIE_SPACE_ID, conversation_id, question)
+    else:
+        msg = w.genie.start_conversation_and_wait(GENIE_SPACE_ID, question)
+    text_parts, sql = [], None
+    for att in (msg.attachments or []):
+        if getattr(att, "text", None) and att.text.content:
+            text_parts.append(att.text.content)
+        if getattr(att, "query", None):
+            sql = att.query.query
+    return {"text": "\n".join(text_parts), "sql": sql,
+            "conversation_id": msg.conversation_id, "message_id": msg.id}
+
+r = ask_genie("Which 5 products sold the most cases in the West region?")
+print("ANSWER:\n", r["text"])
+print("\nGENERATED SQL:\n", r["sql"])
+
+@@@CODE
+# Follow-up in the same conversation — Genie keeps context.
+r2 = ask_genie("Now show the same thing for the Southeast region.", r["conversation_id"])
+print("ANSWER:\n", r2["text"])
+print("\nGENERATED SQL:\n", r2["sql"])
+
+@@@MD
+## ✅ Recap & best-practices checklist
+
+You turned four raw tables into a well-governed Genie agent.
+
+- [x] **≤ 5 curated tables** (we used 4)
+- [x] **Table + column comments** with units, meaning, enum values
+- [x] **PK/FK constraints** so Genie knows the joins
+- [x] **Certified example SQL** for the common question patterns
+- [x] Genie space **created as code** and validated with the Conversation API
+
+**Save your `GENIE_SPACE_ID`.** **Next → Notebook 3:** build an **Agent Bricks
+Knowledge Assistant** over the policy/SOP PDFs from Notebook 1 — the unstructured
+counterpart to this Genie agent.
+
+@@@MD
+---
+### ➡️ Continue to **[Notebook 3 · Agent Bricks — Knowledge Assistant](./03_knowledge_assistant_agent_bricks)**
+
+Turn the `knowledge_base` Volume from Notebook 1 into a cited, document-answering
+assistant. *(Keep your `GENIE_SPACE_ID` handy — Notebook 7's app needs it.)*

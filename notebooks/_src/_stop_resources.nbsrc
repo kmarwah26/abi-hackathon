@@ -1,0 +1,45 @@
+@@@MD
+# 🔻 Stop Resources — cost control
+
+Stops the **Databricks App** and the **Lakebase instance** so they stop billing.
+Run it **manually anytime**, or let the scheduled *auto-shutdown* job (created in
+Notebook 7, Step 7) run it for you after a few hours.
+
+Restart later from the UI, or by re-running Notebooks 5 (Lakebase) and 7 (App).
+
+Set the widgets to match the app/instance names you used.
+@@@CODE
+%pip install --quiet --upgrade databricks-sdk
+dbutils.library.restartPython()
+
+@@@CODE
+dbutils.widgets.text("app_name", "abi-genie-app", "Databricks App name")
+dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance")
+APP = dbutils.widgets.get("app_name").strip()
+INSTANCE = dbutils.widgets.get("lakebase_instance").strip()
+
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.database import DatabaseInstance
+w = WorkspaceClient()
+
+# Stop the app (no-op if it doesn't exist yet / already stopped).
+if APP:
+    try:
+        w.apps.stop(name=APP)
+        print(f"✔ Requested stop of app '{APP}'.")
+    except Exception as e:
+        print(f"App stop skipped/failed: {e}")
+
+# Stop the Lakebase instance (data is preserved; only compute stops).
+if INSTANCE:
+    try:
+        w.database.update_database_instance(
+            name=INSTANCE,
+            database_instance=DatabaseInstance(name=INSTANCE, stopped=True),
+            update_mask="stopped",
+        )
+        print(f"✔ Requested stop of Lakebase '{INSTANCE}'.")
+    except Exception as e:
+        print(f"Lakebase stop skipped/failed: {e}")
+
+print("Done.")

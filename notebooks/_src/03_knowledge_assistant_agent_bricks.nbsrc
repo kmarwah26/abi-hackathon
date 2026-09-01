@@ -1,0 +1,224 @@
+@@@MD
+# 03 · Agent Bricks — Knowledge Assistant
+
+**Pre-Hackathon Enablement · Notebook 3 of 7**
+
+Notebook 2's Genie agent answers questions about your **structured** tables. But
+much of the real supply-chain knowledge lives in **documents** — the policies and
+SOPs you landed in a **Unity Catalog Volume** in Notebook 1. This notebook turns
+those PDFs into a governed **Agent Bricks → Knowledge Assistant**: a
+retrieval-augmented agent that answers *"how do we…"* questions **with citations**
+back to the source docs.
+
+It needs only the **`knowledge_base` Volume from Notebook 1** — the PDFs you
+generated there. The **app in Notebook 7** will call this assistant alongside
+Genie, so keep the endpoint name it produces.
+
+@@@IMG:knowledge_assistant_flow
+
+### What is Agent Bricks?
+**Agent Bricks** is Databricks' guided way to build production agents. The
+**Knowledge Assistant** flavour is purpose-built for Q&A over unstructured docs:
+you point it at a knowledge source (a **UC Volume** or a **Vector Search index**),
+and Databricks handles the hard parts — **chunking, embedding, indexing, and
+retrieval** — then deploys a **model serving endpoint** you can query from a
+notebook, an app, or another agent. It's all governed by Unity Catalog.
+
+### Structured + unstructured, one story
+- **Genie** (Notebook 2) → *"What were West-region case volumes last quarter?"*
+- **Knowledge Assistant** (here) → *"What's our on-time delivery policy, and how
+  is 'on-time' defined?"*
+
+Same data domain, same governance — two complementary agents. (An Agent Bricks
+**Multi-Agent Supervisor** can even route between them; noted in the recap.)
+
+@@@IMG:structured_vs_unstructured
+
+### What you'll do
+1. **Confirm** the knowledge base (the Volume + PDFs from Notebook 1)
+2. **Create** the Knowledge Assistant in Agent Bricks (a short UI walkthrough)
+3. **Find** its serving endpoint
+4. **Query** it programmatically — grounded answers with citations
+5. Understand the **governance**, and how to wire it into the app
+
+> **Prerequisites:** Notebook 1 completed (it created the `knowledge_base`
+> Volume and the PDFs). An **FE-VM / serverless** workspace with **Agent Bricks**
+> and **Vector Search** available. Same `catalog`/`schema` as Notebook 1.
+
+@@@MD
+## Step 0 · Upgrade the SDK
+
+We query the deployed assistant with the SDK's OpenAI-compatible client
+(`get_open_ai_client`), which needs a recent `databricks-sdk`. Upgrade once at
+the top (`restartPython` clears state, so run this **first**).
+@@@CODE
+%pip install --quiet --upgrade databricks-sdk
+dbutils.library.restartPython()
+
+@@@MD
+## Step 1 · Confirm the knowledge base
+
+Point at the **same** `catalog`/`schema` as Notebook 1 and confirm the Volume and
+its PDFs are there. If it's empty, run **Notebook 1 · Step 5** first (that's where
+the Volume and documents are created).
+@@@CODE
+dbutils.widgets.text("catalog", "main", "Unity Catalog catalog (same as Notebook 1)")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema (same as Notebook 1)")
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
+VOLUME = "knowledge_base"
+FQ = f"{CATALOG}.{SCHEMA}"
+VOL_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
+
+files = dbutils.fs.ls(VOL_PATH)  # errors if the Volume is missing -> run Notebook 1 Step 5
+pdfs = [f for f in files if f.name.lower().endswith(".pdf")]
+for f in sorted(pdfs, key=lambda x: x.name):
+    print(f"  {f.name:52s} {f.size / 1024:6.1f} KB")
+assert pdfs, f"No PDFs in {VOL_PATH} — run Notebook 1 · Step 5 first."
+print(f"\n{len(pdfs)} documents ready in {VOL_PATH}")
+
+@@@MD
+## Step 2 · Create the Knowledge Assistant (Agent Bricks)
+
+Agent Bricks is a **guided, UI-first** experience — you create the assistant in
+the workspace, and Databricks builds and deploys the retrieval pipeline for you.
+It takes ~2 minutes of clicking; there's no code to write here.
+
+1. In the left nav, open **Agents** → **Agent Bricks** → **Knowledge Assistant**
+   → **Build**.
+2. **Name** it something per-person so a shared workspace doesn't collide, e.g.
+   `abi-knowledge-assistant-<yourname>`.
+3. **Description / instructions** — this steers tone and scope. Paste something like:
+   > *"You are a supply-chain operations assistant for an Anheuser-Busch beverage
+   > distribution business. Answer questions about distributor onboarding and
+   > credit, carrier and freight procedures, product quality and packaging,
+   > order fulfillment SLAs, and returns/sustainability policy — using only the
+   > provided documents, and cite them. If the answer isn't in the docs, say so."*
+4. **Add knowledge source** → **Unity Catalog Volume** → pick
+   **`{catalog}.{schema}.knowledge_base`** (the Volume from Step 1). Give it a
+   short label like *"Supply-chain policies & SOPs"*.
+5. **Create.** Databricks now chunks, embeds, and indexes the PDFs (via **Vector
+   Search**) and deploys a **serving endpoint**. Indexing the handful of docs
+   here takes a few minutes.
+
+> **Why the UI?** Knowledge Assistant creation is driven from Agent Bricks today.
+> Everything *after* creation — querying, evaluation, wiring into an app — is
+> fully programmatic, which is what the rest of this notebook shows. (You can also
+> iterate on quality in the UI with its built-in eval + "Improve quality" tools.)
+
+@@@MD
+## Step 3 · Find your endpoint
+
+Once the assistant finishes deploying, it appears as a **serving endpoint**. Run
+this to list endpoints, then set the `endpoint_name` widget to the one Agent
+Bricks created (its name matches the assistant, often prefixed like `ka-…` or
+`agents_…`).
+@@@CODE
+from databricks.sdk import WorkspaceClient
+w = WorkspaceClient()
+
+print("Serving endpoints in this workspace:\n")
+for e in w.serving_endpoints.list():
+    print(f"  {e.name}")
+
+dbutils.widgets.text("endpoint_name", "", "Knowledge Assistant serving-endpoint name")
+ENDPOINT = dbutils.widgets.get("endpoint_name").strip()
+print(f"\nSelected endpoint: {ENDPOINT or '(set the endpoint_name widget above)'}")
+
+@@@MD
+## Step 4 · Query the assistant — grounded answers with citations
+
+Query the deployed endpoint with the SDK's **OpenAI-compatible client**. The
+Knowledge Assistant retrieves the relevant chunks from your PDFs and answers from
+them — the same call an app would make. The questions below map directly to the
+documents from Notebook 1.
+@@@CODE
+assert ENDPOINT, "Set the endpoint_name widget (Step 3) to your assistant's endpoint."
+client = w.serving_endpoints.get_open_ai_client()  # pre-authed OpenAI client for this workspace
+
+def ask_ka(question, history=None):
+    """Ask the Knowledge Assistant. Returns (answer, updated_history)."""
+    messages = (history or []) + [{"role": "user", "content": question}]
+    resp = client.chat.completions.create(model=ENDPOINT, messages=messages)
+    answer = resp.choices[0].message.content
+    return answer, messages + [{"role": "assistant", "content": answer}]
+
+q1 = "What is the credit limit for a Premier distributor, and what are the standard payment terms?"
+ans, hist = ask_ka(q1)
+print("Q:", q1, "\n\nA:", ans)
+
+@@@CODE
+# A few more, each grounded in a different document.
+for q in [
+    "How is on-time delivery defined, and which distribution center serves the West region?",
+    "What temperature should packaged product be stored at, and how should half kegs be handled?",
+    "Within how many days must a damaged-goods return be reported?",
+]:
+    a, _ = ask_ka(q)
+    print(f"{'='*88}\nQ: {q}\n{'-'*88}\nA: {a}\n")
+
+@@@CODE
+# Multi-turn: the assistant keeps context across the conversation.
+follow_up = "And what happens to the empty kegs afterwards?"
+a2, hist = ask_ka(follow_up, history=hist)
+print("Q:", follow_up, "\n\nA:", a2)
+
+@@@MD
+### Fallback (if `get_open_ai_client` isn't available)
+
+Older SDKs can query the endpoint directly instead:
+```python
+from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+resp = w.serving_endpoints.query(
+    name=ENDPOINT,
+    messages=[ChatMessage(role=ChatMessageRole.USER, content="…your question…")],
+)
+print(resp.choices[0].message.content)
+```
+Or hit the REST endpoint at `POST {host}/serving-endpoints/{ENDPOINT}/invocations`
+with a bearer token and an OpenAI-style `{"messages": [...]}` body.
+
+@@@MD
+## Step 5 · Governance, and wiring it into the app
+
+The Knowledge Assistant runs **inside** Unity Catalog governance:
+- **Grounded + cited.** Answers come from *your* documents, with citations — so
+  you can trace every claim back to a source PDF (curbs hallucination).
+- **Permissions.** The endpoint runs as an identity that must have access to the
+  Volume; a caller (a user or an app's **service principal**) must have
+  **`CAN_QUERY`** on the serving endpoint. Same model as any Databricks endpoint.
+- **Refresh.** Drop new PDFs into the `knowledge_base` Volume and re-sync / re-index
+  from Agent Bricks to keep answers current — the Volume is the single source.
+- **Lineage & audit.** The endpoint, the vector index, and the Volume are all UC
+  assets, so usage and lineage are captured.
+
+**Wire it into the Databricks App (Notebook 7).** The app adds the assistant's
+serving endpoint as a **resource** (the app SP gets `CAN_QUERY`) and a *"Docs"*
+tab that calls `ask_ka(...)` exactly like above — so one app answers both **data**
+questions (Genie) and **policy** questions (Knowledge Assistant). Note the
+endpoint name from Step 3; you'll set it on the app.
+
+@@@MD
+## ✅ Recap
+
+You built a governed **Knowledge Assistant** over the documents from Notebook 1:
+
+- **Source:** the `knowledge_base` **UC Volume** of supply-chain PDFs.
+- **Agent Bricks** chunked, embedded, indexed (Vector Search) and deployed it as a
+  **serving endpoint** — no pipeline code to maintain.
+- You queried it programmatically for **grounded, cited** answers, single- and
+  multi-turn — the same call an app makes.
+- It's **complementary to Genie**: structured Q&A (Genie) + document Q&A
+  (Knowledge Assistant), one governance model.
+
+**Next → Notebook 4:** a **demand-forecasting** model with MLflow — the third AI
+asset the app will surface. (You can also later combine Genie + this assistant
+behind an Agent Bricks **Multi-Agent Supervisor** that routes each question to the
+right specialist.)
+
+@@@MD
+---
+### ➡️ Continue to **[Notebook 4 · Demand Forecasting with MLflow](./04_demand_forecasting_mlflow)**
+
+Train and register a demand forecast from Notebook 1's `orders`, and write it to a
+Delta table the app will chart. *(Attach a **Databricks Runtime for ML**.)*

@@ -1,0 +1,290 @@
+@@@MD
+# 05 · Lakebase — Managed Postgres for App State
+
+**Pre-Hackathon Enablement · Notebook 5 of 7**
+
+Genie answers questions about your *analytical* Delta tables. But an application
+also needs **transactional state**: review queues, approvals, drafts, and — for
+our app — a **conversation log**. That's what **Lakebase** (fully-managed
+Postgres) is for.
+
+### When Lakebase, when Delta? (from the deck)
+Reach for Lakebase for **operational, transactional** state — and keep analytics
+in Delta. The app in Notebook 7 uses both: Genie reads Delta, the app writes its
+conversation log to Lakebase.
+
+@@@IMG:lakebase_vs_delta
+
+### What you'll do
+1. Create a **Lakebase instance** (provisioned tier)
+2. Create a logical database + `app` schema
+3. Create the **`conversations`** table the app writes to (Notebook 7)
+4. Copy **reference data** (`products`, `distributors`) and the
+   **`demand_forecast`** table (Notebook 4) from Delta → Lakebase
+
+> **Prerequisites:** an **FE-VM serverless workspace** (Lakebase needs serverless).
+> Notebook 1 completed (reference data); Notebook 4 completed if you want the
+> **`demand_forecast`** copied so the app can chart it. This notebook uses the
+> Databricks SDK, so it runs from inside the workspace with no CLI needed.
+
+@@@CODE
+%pip install --quiet --upgrade databricks-sdk psycopg2-binary sqlalchemy
+dbutils.library.restartPython()
+
+@@@CODE
+dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema (database)")
+dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance name")
+dbutils.widgets.text("app_db", "abi_app", "Lakebase logical database")
+dbutils.widgets.dropdown("capacity", "CU_1", ["CU_1", "CU_2", "CU_4", "CU_8"], "Instance capacity")
+
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
+FQ = f"{CATALOG}.{SCHEMA}"
+INSTANCE = dbutils.widgets.get("lakebase_instance")
+APP_DB = dbutils.widgets.get("app_db")
+CAPACITY = dbutils.widgets.get("capacity")
+print(f"Delta source : {FQ}")
+print(f"Lakebase     : instance='{INSTANCE}' db='{APP_DB}' capacity={CAPACITY}")
+
+@@@MD
+## Step 1 · Create the Lakebase instance
+
+We use the SDK's `database` API. Creation is idempotent here: we try to fetch
+the instance first and only create it if missing. Provisioning takes ~2–5 min.
+@@@CODE
+import time
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.database import DatabaseInstance
+
+w = WorkspaceClient()
+
+def get_instance(name):
+    try:
+        return w.database.get_database_instance(name=name)
+    except Exception:
+        return None
+
+inst = get_instance(INSTANCE)
+if inst is None:
+    print(f"Creating Lakebase instance '{INSTANCE}' ({CAPACITY})…")
+    w.database.create_database_instance(
+        DatabaseInstance(name=INSTANCE, capacity=CAPACITY)
+    )
+else:
+    print(f"Instance '{INSTANCE}' already exists (state={inst.state}).")
+    # A reused instance is often STOPPED (auto-suspended to save cost). Start it —
+    # otherwise the wait-for-AVAILABLE loop below just spins until it times out.
+    if getattr(inst, "stopped", False) or "STOPPED" in str(inst.state):
+        print("  Instance is stopped — starting it (takes a few minutes)…")
+        w.database.update_database_instance(
+            name=INSTANCE,
+            database_instance=DatabaseInstance(name=INSTANCE, stopped=False),
+            update_mask="stopped",
+        )
+
+@@@CODE
+# Wait for the instance to become AVAILABLE.
+for _ in range(40):  # ~20 min max
+    inst = get_instance(INSTANCE)
+    state = str(inst.state) if inst else "UNKNOWN"
+    print(f"  state = {state}")
+    if "AVAILABLE" in state:
+        break
+    time.sleep(30)
+
+assert inst and "AVAILABLE" in str(inst.state), "Instance not available yet — re-run this cell."
+HOST = inst.read_write_dns
+print(f"\nReady. read_write_dns = {HOST}")
+
+@@@MD
+## Step 2 · Connect with SQLAlchemy
+
+Lakebase uses **OAuth tokens as the Postgres password** (they expire ~1 hour, so
+we mint a fresh one when building the engine). Our Databricks identity is the
+Postgres user.
+
+@@@IMG:lakebase_connection
+
+This is exactly how the **app** (Notebook 7) connects, too — same engine, same
+short-lived token — except it authenticates as the app's **service principal**
+rather than your user. The tables on the right are what we create in Steps 3–5.
+@@@CODE
+import uuid
+from urllib.parse import quote_plus
+from sqlalchemy import create_engine, text
+
+PGUSER = w.current_user.me().user_name  # your Databricks email = Postgres role
+
+def db_token():
+    cred = w.database.generate_database_credential(
+        request_id=str(uuid.uuid4()), instance_names=[INSTANCE]
+    )
+    return cred.token
+
+def make_engine(dbname):
+    token = db_token()
+    url = (f"postgresql+psycopg2://{quote_plus(PGUSER)}:{quote_plus(token)}"
+           f"@{HOST}:5432/{dbname}?sslmode=require")
+    # isolation_level AUTOCOMMIT lets us run CREATE DATABASE (can't run in a txn).
+    return create_engine(url, isolation_level="AUTOCOMMIT", pool_pre_ping=True)
+
+# The default logical database that always exists on a Lakebase instance.
+admin_engine = make_engine("databricks_postgres")
+with admin_engine.connect() as c:
+    print(c.execute(text("SELECT version();")).scalar())
+
+@@@MD
+## Step 3 · Create the logical database + `app` schema
+@@@CODE
+with admin_engine.connect() as c:
+    exists = c.execute(
+        text("SELECT 1 FROM pg_database WHERE datname = :n"), {"n": APP_DB}
+    ).first()
+    if not exists:
+        c.execute(text(f'CREATE DATABASE "{APP_DB}"'))
+        print(f"Created database '{APP_DB}'.")
+    else:
+        print(f"Database '{APP_DB}' already exists.")
+
+# Connect to the app database and create the schema.
+app_engine = make_engine(APP_DB)
+with app_engine.begin() as c:
+    c.execute(text("CREATE SCHEMA IF NOT EXISTS app"))
+print("Schema 'app' ready.")
+
+@@@MD
+## Step 4 · Create the tables
+
+Two reference tables (`app.products`, `app.distributors`) the app can read for
+fast lookups, plus two **write-back** tables: **`app.conversations`** (every Genie
+Q&A turn) and **`app.action_items`** (a review/approval queue the app's second
+tab writes to — the transactional read/write state that's the whole point of
+Lakebase).
+@@@CODE
+DDL = """
+CREATE TABLE IF NOT EXISTS app.products (
+    product_sku     TEXT PRIMARY KEY,
+    product_name    TEXT NOT NULL,
+    brand           TEXT,
+    category        TEXT,
+    package_type    TEXT,
+    units_per_case  INT,
+    unit_cost_usd   NUMERIC(10,2),
+    list_price_usd  NUMERIC(10,2)
+);
+
+CREATE TABLE IF NOT EXISTS app.distributors (
+    distributor_id    TEXT PRIMARY KEY,
+    distributor_name  TEXT NOT NULL,
+    region            TEXT,
+    state             TEXT,
+    city              TEXT,
+    tier              TEXT,
+    credit_limit_usd  NUMERIC(12,2),
+    onboarded_date    DATE
+);
+
+CREATE TABLE IF NOT EXISTS app.conversations (
+    id                SERIAL PRIMARY KEY,
+    session_id        TEXT NOT NULL,
+    user_email        TEXT,
+    question          TEXT NOT NULL,
+    answer_text       TEXT,
+    generated_sql     TEXT,
+    result_row_count  INT,
+    conversation_id   TEXT,
+    message_id        TEXT,
+    created_at        TIMESTAMP DEFAULT NOW()
+);
+
+-- Transactional app state written by the app's "Action items" tab (Notebook 7):
+-- a review/approval queue — the kind of read/write workload Lakebase exists for.
+CREATE TABLE IF NOT EXISTS app.action_items (
+    id          SERIAL PRIMARY KEY,
+    created_by  TEXT,
+    title       TEXT NOT NULL,
+    note        TEXT,
+    status      TEXT DEFAULT 'Open',
+    created_at  TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_session ON app.conversations(session_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_created ON app.conversations(created_at);
+"""
+with app_engine.begin() as c:
+    for stmt in [s for s in DDL.split(";") if s.strip()]:
+        c.execute(text(stmt))
+print("Tables created: app.products, app.distributors, app.conversations, app.action_items")
+
+@@@MD
+## Step 5 · Copy reference data + the forecast from Delta → Lakebase
+
+We read the Delta tables into pandas and bulk-load them into Lakebase. For the
+modest reference tables here, pandas `to_sql` is perfectly fine. (For large or
+continuously-updated tables you'd use a Lakebase **synced table** instead — noted
+in the recap.) The **`demand_forecast`** table (Notebook 4) is copied the same
+way so the Notebook 7 app can chart it from Postgres.
+
+@@@IMG:delta_to_lakebase
+@@@CODE
+import pandas as pd
+
+def copy_table(delta_name, pg_table):
+    pdf = spark.table(f"{FQ}.{delta_name}").toPandas()
+    # replace = truncate + reload, so re-running the notebook is safe.
+    pdf.to_sql(pg_table, app_engine, schema="app", if_exists="replace", index=False)
+    print(f"  copied {delta_name} -> app.{pg_table}  ({len(pdf)} rows)")
+
+print("Copying reference data…")
+copy_table("products", "products")
+copy_table("distributors", "distributors")
+
+# The demand forecast from Notebook 4 (the app charts this). Skip gracefully if
+# you haven't run Notebook 4 yet.
+try:
+    copy_table("demand_forecast", "demand_forecast")
+except Exception as e:
+    print(f"  (skipped demand_forecast — run Notebook 4 first: {e})")
+print("Done.")
+
+@@@MD
+## Step 6 · Verify
+@@@CODE
+with app_engine.connect() as c:
+    for t in ["products", "distributors", "conversations", "action_items", "demand_forecast"]:
+        try:
+            n = c.execute(text(f"SELECT COUNT(*) FROM app.{t}")).scalar()
+            print(f"app.{t:16s} {n:>6} rows")
+        except Exception:
+            print(f"app.{t:16s}    (not present yet)")
+    print("\nSample distributors:")
+    for row in c.execute(text("SELECT distributor_name, region, tier FROM app.distributors LIMIT 5")):
+        print("  ", row)
+
+@@@MD
+## ✅ Recap & what's next
+
+You provisioned a **Lakebase** instance, created the `abi_app` database with an
+`app` schema, and loaded reference data, the `demand_forecast`, and the
+write-back tables (`conversations`, `action_items`).
+
+**Key ideas**
+- Lakebase = **managed Postgres** for low-latency, transactional **app state**.
+- OAuth token = the Postgres password (short-lived; mint fresh).
+- Reference data + the forecast were **copied** with `to_sql`; for large/live
+  tables use a **synced table** (Delta → Lakebase reverse-ETL) instead.
+- Analytics stays in Delta/Genie; **operational writes** (the conversation log)
+  go to Lakebase.
+
+You've now built every data + AI piece the app needs (Genie, Knowledge Assistant,
+forecast, Lakebase). **Next → Notebook 6:** **Genie Code** — the governed,
+AI-assisted development pattern — before Notebook 7 assembles the full app.
+
+@@@MD
+---
+### ➡️ Continue to **[Notebook 6 · Genie Code — Prompt Playbook for Governed Assets](./06_genie_code_governed_assets)**
+
+Use Genie Code to generate and ship governed SQL/assets with a human-approval
+gate — then Notebook 7 brings Genie, Lakebase, the Knowledge Assistant, and the
+forecast together into one app.
