@@ -146,41 +146,68 @@ print(f"\nSelected endpoint: {ENDPOINT or '(set the endpoint_name widget above)'
 @@@MD
 ## Step 4 · Query the assistant — grounded answers with citations
 
-A Knowledge Assistant endpoint speaks the **OpenAI chat schema**, so the cleanest
-call is the SDK's pre-authed **OpenAI-compatible client**
-(`client.chat.completions.create(model=ENDPOINT, messages=[…])`). The `ask_ka`
-helper below uses that, and **falls back** to the SDK's `serving_endpoints.query`
-with typed `ChatMessage`s if the OpenAI client isn't available — so it works across
-SDK versions. The retriever pulls the relevant chunks from your PDFs and the model
-answers from them; the questions map to the documents from Notebook 1.
+Query the deployed endpoint with the SDK's pre-authed **OpenAI-compatible client**.
+The catch: **Agent Bricks agents (including recent Knowledge Assistants) are served
+as `ResponsesAgent`s**, so they use the OpenAI **responses** API
+(`client.responses.create(model=ENDPOINT, input=[…])`) — *not* `chat.completions`.
+Calling `chat.completions.create` on one raises
+`TypeError: Missing required arguments … ('messages' and 'model')`.
 
-> **Common mistake:** `w.serving_endpoints.query(name=ENDPOINT, input=messages)` fails
-> here — `input=` is a *different* (responses) schema and its result has no
-> `.choices`. For a chat/KA endpoint use **`messages=[ChatMessage(...)]`** (or the
-> OpenAI client), as below.
+So `ask_ka` below **tries the responses API first**, then falls back to
+`chat.completions` (plain chat models) and finally the SDK's `serving_endpoints.query`
+— so it works whatever interface your endpoint exposes. The retriever pulls the
+relevant chunks from your PDFs and answers from them; the questions map to the
+documents from Notebook 1.
+
+> **On `input=` vs `messages=`:** `input=` is correct for the OpenAI **responses**
+> call (`client.responses.create`). It is *not* valid for the SDK's
+> `w.serving_endpoints.query` — that one takes **`messages=[ChatMessage(...)]`**.
+> Mixing them up (`query(..., input=…)`) is what produced the earlier no-`.choices` error.
 @@@CODE
 # Re-read the widget here so you can set it after Step 3's listing, then run this cell.
 ENDPOINT = dbutils.widgets.get("endpoint_name").strip()
 assert ENDPOINT, "Set the endpoint_name widget (Step 3) to your assistant's endpoint."
 
+def _text_from_responses(resp):
+    """Pull the answer text out of an OpenAI *responses* object (agent endpoints)."""
+    txt = getattr(resp, "output_text", None)   # convenience aggregate in recent SDKs
+    if txt:
+        return txt
+    parts = []
+    for item in (getattr(resp, "output", None) or []):
+        for c in (getattr(item, "content", None) or []):
+            t = getattr(c, "text", None) or (c.get("text") if isinstance(c, dict) else None)
+            if t:
+                parts.append(t)
+    return "\n".join(parts) if parts else str(resp)
+
 def ask_ka(question, history=None):
     """Ask the Knowledge Assistant. Returns (answer, updated_history).
 
-    Primary path: the pre-authed OpenAI-compatible client. Fallback: the SDK's
-    query() with typed ChatMessages (NOT input=..., which is a different schema)."""
+    Agent Bricks agents (incl. recent Knowledge Assistants) are served as
+    **ResponsesAgents** → the OpenAI *responses* API. Older/plain chat endpoints use
+    *chat.completions*. We try responses first, then chat, then the SDK query() — so
+    it works whatever interface your endpoint exposes."""
     messages = (history or []) + [{"role": "user", "content": question}]
+    client = w.serving_endpoints.get_open_ai_client()  # pre-authed for this workspace
     try:
-        client = w.serving_endpoints.get_open_ai_client()   # pre-authed for this workspace
-        resp = client.chat.completions.create(model=ENDPOINT, messages=messages)
-        answer = resp.choices[0].message.content
+        # ResponsesAgent path. `input` takes the running message list.
+        resp = client.responses.create(model=ENDPOINT, input=messages)
+        answer = _text_from_responses(resp)
     except Exception:
-        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-        _role = {"user": ChatMessageRole.USER, "assistant": ChatMessageRole.ASSISTANT,
-                 "system": ChatMessageRole.SYSTEM}
-        resp = w.serving_endpoints.query(
-            name=ENDPOINT,
-            messages=[ChatMessage(role=_role[m["role"]], content=m["content"]) for m in messages])
-        answer = resp.choices[0].message.content
+        try:
+            # Plain chat-completions model.
+            resp = client.chat.completions.create(model=ENDPOINT, messages=messages)
+            answer = resp.choices[0].message.content
+        except Exception:
+            # SDK query() with typed ChatMessages (NOT input=...).
+            from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+            _role = {"user": ChatMessageRole.USER, "assistant": ChatMessageRole.ASSISTANT,
+                     "system": ChatMessageRole.SYSTEM}
+            resp = w.serving_endpoints.query(
+                name=ENDPOINT,
+                messages=[ChatMessage(role=_role[m["role"]], content=m["content"]) for m in messages])
+            answer = resp.choices[0].message.content
     return answer, messages + [{"role": "assistant", "content": answer}]
 
 q1 = "What is the credit limit for a Premier distributor, and what are the standard payment terms?"
