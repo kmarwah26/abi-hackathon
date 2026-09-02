@@ -434,7 +434,7 @@ except Exception as e:  # noqa: BLE001
 # The SP's Postgres role (its role name IS its client id) provisions a few seconds
 # after the grant — poll for it, then grant table-level privileges.
 _role_ok = False
-for _ in range(12):   # ~60s
+for _ in range(24):   # ~2 min (role provisioning is async)
     with engine.connect() as c:
         if c.execute(text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": SP}).first():
             _role_ok = True
@@ -442,8 +442,12 @@ for _ in range(12):   # ~60s
     _t.sleep(5)
 
 if not _role_ok:
-    print(f"⚠️  SP role '{SP}' not provisioned on '{INSTANCE}' yet — re-run this cell in a minute "
-          f"(the CAN_USE grant above provisions it). Skipping table grants for now.")
+    print(f"⚠️  SP role '{SP}' not provisioned on '{INSTANCE}' yet.")
+    print("    Provisioning is async — **just re-run this cell** (give it a minute or two).")
+    print("    If it still won't appear after a few tries, the instance's identity→role sync")
+    print("    isn't picking up the CAN_USE grant on this workspace: ask an admin to grant you")
+    print("    CAN_MANAGE on the instance and re-run Step 4 (attaching the Database resource")
+    print("    provisions the role directly). Skipping the table grants for now.")
 else:
     with engine.begin() as c:
         c.execute(text(f'GRANT USAGE ON SCHEMA app TO "{SP}"'))
@@ -471,13 +475,21 @@ GENIE_SPACE_ID = dbutils.widgets.get("genie_space_id").strip()
 assert GENIE_SPACE_ID, "Set the genie_space_id widget (from Notebook 2's output)."
 
 wh_id = w.genie.get_space(GENIE_SPACE_ID).warehouse_id
-w.warehouses.update_permissions(  # additive — keeps existing ACLs
-    warehouse_id=wh_id,
-    access_control_list=[sqlsvc.WarehouseAccessControlRequest(
-        service_principal_name=SP,
-        permission_level=sqlsvc.WarehousePermissionLevel.CAN_USE)],
-)
-print(f"Granted CAN_USE on warehouse {wh_id} to the app SP.")
+try:
+    w.warehouses.update_permissions(  # additive — keeps existing ACLs
+        warehouse_id=wh_id,
+        access_control_list=[sqlsvc.WarehouseAccessControlRequest(
+            service_principal_name=SP,
+            permission_level=sqlsvc.WarehousePermissionLevel.CAN_USE)],
+    )
+    print(f"Granted CAN_USE on warehouse {wh_id} to the app SP.")
+except Exception as e:  # noqa: BLE001 — you need MANAGE on the warehouse to grant it
+    print(f"⚠️  Couldn't grant the SP CAN_USE on warehouse {wh_id}: {str(e).splitlines()[0][:110]}")
+    print("    Granting warehouse permissions needs MANAGE on it — which you won't have on a")
+    print("    shared/admin-owned warehouse. Ask its owner (or an admin) to grant the app SP")
+    print(f"    '{SP}' (or all users) CAN_USE on warehouse {wh_id}. Without it, the Ask-Genie tab")
+    print("    fails at runtime with 'not authorized to use ... this SQL Endpoint'. (Everything")
+    print("    else — the app, forecast, Lakebase tabs — is unaffected.)")
 
 @@@CODE
 # 5d · Knowledge Assistant grant — the SP must be able to query the assistant's
