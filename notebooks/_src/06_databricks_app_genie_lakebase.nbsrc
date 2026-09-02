@@ -329,18 +329,19 @@ else:
         print("App compute is ready (all resources attached).")
     except Exception as e:  # noqa: BLE001
         msg = str(e)
-        # Attaching the Lakebase database resource needs MANAGE on the instance. With the
-        # per-user instance from Notebook 5 you own it, so this normally succeeds. If you
-        # point at a shared instance you don't own you'll get "User needs MANAGE permission
-        # on the resource" — retry without the lakebase resource so the app still comes up.
+        # Attaching the Lakebase instance as an app *resource* needs MANAGE — which many
+        # workspaces don't grant even to the instance creator ("User needs MANAGE permission
+        # on the resource"). That's fine: we create the app WITHOUT the resource, and Step 5b
+        # grants the app SP CAN_USE on the instance directly (which you CAN do as the owner),
+        # provisioning its Postgres role. So the Lakebase tabs still work — just run Step 5.
         if "MANAGE" in msg or "lakebase" in msg.lower() or "database" in msg.lower():
             _delete_if_exists()   # clear any half-created/ERROR app before retrying
-            print(f"⚠️  Couldn't attach the Lakebase resource: {msg.splitlines()[0][:130]}")
-            print("    Retrying WITHOUT it — you don't own this instance (no MANAGE).")
+            print(f"ℹ️  Couldn't attach the Lakebase resource ({msg.splitlines()[0][:90]}).")
+            print("    That's expected on workspaces that gate instance MANAGE — creating the app")
+            print("    without it. **Step 5b grants the SP CAN_USE on your instance directly**, so")
+            print("    the Lakebase tabs still work. Genie + forecast attach now; just run Step 5.")
             _create([r for r in resources if r.name != "lakebase"])
-            print("App created without the Lakebase resource — Genie + forecast tabs work; an")
-            print("admin must attach the Database resource (or grant CAN_MANAGE) for the Lakebase")
-            print("tabs. With the per-user instance from Notebook 5 this fallback shouldn't fire.")
+            print("App created (Genie + forecast). → Run Step 5 to wire up Lakebase for the SP.")
         else:
             raise   # e.g. a transient ComputeState.ERROR — re-run (the delete above cleans it up)
 @@@CODE
