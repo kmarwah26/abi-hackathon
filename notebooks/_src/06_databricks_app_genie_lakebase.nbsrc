@@ -61,15 +61,15 @@ tables, and Postgres privileges on the Lakebase `app.*` tables.
 
 > **Prerequisites:** Notebooks 1–5 done (data, Genie, Knowledge Assistant,
 > forecast, Lakebase). The app source lives in the sibling **`../app/`** folder
-> (`app.py`, `app.yaml`, `server/`, and a pre-built `frontend/dist/`). This notebook
-> **creates and deploys the app for you with the SDK** — no CLI needed — as long as
-> the repo is cloned as a **Databricks Git folder** so `../app` is a workspace path.
+> (`app.py`, `app.yaml`, `server/`, `frontend/`). This notebook **creates and deploys
+> the app for you with the SDK** — no CLI needed — as long as the repo is cloned as a
+> **Databricks Git folder** so `../app` is a workspace path.
 >
 > **Frontend build:** Databricks Apps installs `requirements.txt` and runs the
-> `app.yaml` command, but it does **not** build the React app. The repo ships a
-> **pre-built `frontend/dist/`**, so deploy works out of the box. Only if you change
-> the UI under `app/frontend/src/` do you need to rebuild it (`cd app/frontend &&
-> npm install && npm run build`) and commit `dist/` — see `app/frontend/README.md`.
+> `app.yaml` command, but it does **not** build the React app. So **Step 3b builds
+> `frontend/dist/` for you on the workspace** (installing a Node toolchain via pip if
+> the cluster lacks one) right before the deploy. If your egress blocks the npm
+> registry, build `dist/` elsewhere and commit it — see the note at Step 3b.
 
 @@@MD
 ## Step 0 · Setup & parameters
@@ -269,6 +269,64 @@ except Exception as e:  # noqa: BLE001 — Git-folder file not writable here →
     print("Set these in ../app/app.yaml by hand, then run Step 4:")
     for k, v in _vals.items():
         print(f'  {k}: "{v}"')
+
+@@@MD
+## Step 3b · Build the React frontend
+
+The app ships a **React** UI that the FastAPI server serves from `frontend/dist`.
+Databricks Apps installs `requirements.txt` and runs the app — it does **not** run
+`npm` — so we build `dist/` here, on the workspace, right before deploying.
+
+This cell builds on the driver's **local disk** (fast), then copies the built
+`dist/` back into the app source so the deploy includes it. If the cluster has no
+Node, it installs a self-contained toolchain via `pip` (`nodejs-bin`) — no cluster
+admin needed. It needs outbound access to the **npm registry**; if that's blocked,
+see the note under the cell.
+@@@CODE
+# Build the React frontend → frontend/dist (the FastAPI app serves it).
+import os, shutil, subprocess, sys
+
+FRONTEND_SRC = f"/Workspace{APP_DIR}/frontend"     # APP_DIR from Step 3
+BUILD_DIR = "/tmp/abi_frontend_build"
+assert os.path.isdir(FRONTEND_SRC), f"No frontend at {FRONTEND_SRC} — pull the latest repo into this Git folder."
+
+# Copy the source to local disk and build there (avoids heavy node_modules writes on
+# the workspace FUSE mount; only the small dist/ is copied back).
+if os.path.exists(BUILD_DIR):
+    shutil.rmtree(BUILD_DIR)
+shutil.copytree(FRONTEND_SRC, BUILD_DIR, ignore=shutil.ignore_patterns("node_modules", "dist"))
+
+# An npm we can call: the cluster's own, or a pip-installed self-contained toolchain.
+_npm = shutil.which("npm")
+if _npm:
+    print(f"Using system npm: {_npm}")
+    def npm_run(args): return subprocess.run([_npm, *args], cwd=BUILD_DIR).returncode
+else:
+    print("No system Node on this cluster — installing one via pip (nodejs-bin)…")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "nodejs-bin"], check=True)
+    import nodejs
+    def npm_run(args):
+        r = nodejs.npm.call(args, cwd=BUILD_DIR)          # .call() returns the exit code
+        return r if isinstance(r, int) else r.returncode  # (guard older/newer APIs)
+
+print("\n[1/2] npm install …")
+assert npm_run(["install", "--no-audit", "--no-fund"]) == 0, "npm install failed (see output above)."
+print("\n[2/2] npm run build …")
+assert npm_run(["run", "build"]) == 0, "npm run build failed (see output above)."
+
+# Copy the built dist back into the app source so the deploy (Step 4) picks it up.
+_src_dist, _dst_dist = os.path.join(BUILD_DIR, "dist"), os.path.join(FRONTEND_SRC, "dist")
+assert os.path.isfile(os.path.join(_src_dist, "index.html")), "Build produced no dist/index.html."
+if os.path.exists(_dst_dist):
+    shutil.rmtree(_dst_dist)
+shutil.copytree(_src_dist, _dst_dist)
+print(f"\n✅ Built the frontend → {_dst_dist}")
+print("   dist contents:", os.listdir(_dst_dist))
+
+@@@MD
+> **If `npm install` can't reach the registry** (locked-down egress), build `dist/`
+> on any machine that can — `cd app/frontend && npm install && npm run build` — commit
+> `app/frontend/dist/`, re-pull this Git folder, and skip straight to Step 4.
 
 @@@MD
 ## Step 4 · Create the app and deploy it — from this notebook
