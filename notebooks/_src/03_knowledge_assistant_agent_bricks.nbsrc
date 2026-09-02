@@ -146,21 +146,41 @@ print(f"\nSelected endpoint: {ENDPOINT or '(set the endpoint_name widget above)'
 @@@MD
 ## Step 4 · Query the assistant — grounded answers with citations
 
-Query the deployed endpoint with the SDK's **OpenAI-compatible client**. The
-Knowledge Assistant retrieves the relevant chunks from your PDFs and answers from
-them — the same call an app would make. The questions below map directly to the
-documents from Notebook 1.
+A Knowledge Assistant endpoint speaks the **OpenAI chat schema**, so the cleanest
+call is the SDK's pre-authed **OpenAI-compatible client**
+(`client.chat.completions.create(model=ENDPOINT, messages=[…])`). The `ask_ka`
+helper below uses that, and **falls back** to the SDK's `serving_endpoints.query`
+with typed `ChatMessage`s if the OpenAI client isn't available — so it works across
+SDK versions. The retriever pulls the relevant chunks from your PDFs and the model
+answers from them; the questions map to the documents from Notebook 1.
+
+> **Common mistake:** `w.serving_endpoints.query(name=ENDPOINT, input=messages)` fails
+> here — `input=` is a *different* (responses) schema and its result has no
+> `.choices`. For a chat/KA endpoint use **`messages=[ChatMessage(...)]`** (or the
+> OpenAI client), as below.
 @@@CODE
 # Re-read the widget here so you can set it after Step 3's listing, then run this cell.
 ENDPOINT = dbutils.widgets.get("endpoint_name").strip()
 assert ENDPOINT, "Set the endpoint_name widget (Step 3) to your assistant's endpoint."
-client = w.serving_endpoints.get_open_ai_client()  # pre-authed OpenAI client for this workspace
 
 def ask_ka(question, history=None):
-    """Ask the Knowledge Assistant. Returns (answer, updated_history)."""
+    """Ask the Knowledge Assistant. Returns (answer, updated_history).
+
+    Primary path: the pre-authed OpenAI-compatible client. Fallback: the SDK's
+    query() with typed ChatMessages (NOT input=..., which is a different schema)."""
     messages = (history or []) + [{"role": "user", "content": question}]
-    resp = client.chat.completions.create(model=ENDPOINT, messages=messages)
-    answer = resp.choices[0].message.content
+    try:
+        client = w.serving_endpoints.get_open_ai_client()   # pre-authed for this workspace
+        resp = client.chat.completions.create(model=ENDPOINT, messages=messages)
+        answer = resp.choices[0].message.content
+    except Exception:
+        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+        _role = {"user": ChatMessageRole.USER, "assistant": ChatMessageRole.ASSISTANT,
+                 "system": ChatMessageRole.SYSTEM}
+        resp = w.serving_endpoints.query(
+            name=ENDPOINT,
+            messages=[ChatMessage(role=_role[m["role"]], content=m["content"]) for m in messages])
+        answer = resp.choices[0].message.content
     return answer, messages + [{"role": "assistant", "content": answer}]
 
 q1 = "What is the credit limit for a Premier distributor, and what are the standard payment terms?"
@@ -179,19 +199,10 @@ a3, hist = ask_ka(follow_up, history=hist)
 print("Q:", follow_up, "\n\nA:", a3)
 
 @@@MD
-### Fallback (if `get_open_ai_client` isn't available)
-
-Older SDKs can query the endpoint directly instead:
-```python
-from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-resp = w.serving_endpoints.query(
-    name=ENDPOINT,
-    messages=[ChatMessage(role=ChatMessageRole.USER, content="…your question…")],
-)
-print(resp.choices[0].message.content)
-```
-Or hit the REST endpoint at `POST {host}/serving-endpoints/{ENDPOINT}/invocations`
-with a bearer token and an OpenAI-style `{"messages": [...]}` body.
+> **Other ways to call it.** `ask_ka` already handles the OpenAI-client and
+> `serving_endpoints.query` paths. You can also hit the REST endpoint directly at
+> `POST {host}/serving-endpoints/{ENDPOINT}/invocations` with a bearer token and an
+> OpenAI-style `{"messages": [...]}` body.
 
 @@@MD
 ## Step 5 · Governance, and wiring it into the app
