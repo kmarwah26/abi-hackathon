@@ -156,6 +156,10 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.ensemble import GradientBoostingRegressor
 
 mlflow.set_registry_uri("databricks-uc")
+# Pin an explicit MLflow experiment. On serverless, auto-resolving the *notebook*
+# experiment can fail ("Could not find experiment with ID None" / the extraContext
+# call isn't py4j-whitelisted), so point at a per-user experiment (created if new).
+mlflow.set_experiment(f"/Users/{spark.sql('SELECT current_user()').collect()[0][0]}/abi_demand_forecast")
 MODEL_NAME = f"{CATALOG}.{SCHEMA}.demand_forecaster"
 
 # Label spine (keys + label); features come from the table via FeatureLookup.
@@ -323,6 +327,7 @@ serving_pipe.fit(feat[MODEL_INPUT], feat["cases"])
 sig = infer_signature(feat[MODEL_INPUT], serving_pipe.predict(feat[MODEL_INPUT]))
 
 mlflow.set_registry_uri("databricks-uc")
+mlflow.set_experiment(f"/Users/{spark.sql('SELECT current_user()').collect()[0][0]}/abi_demand_forecast")
 with mlflow.start_run(run_name="demand_gbr_serving"):
     mlflow.sklearn.log_model(
         sk_model=serving_pipe, artifact_path="model", signature=sig,
