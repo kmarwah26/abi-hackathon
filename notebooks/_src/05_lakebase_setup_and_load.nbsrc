@@ -55,7 +55,7 @@ dbutils.widgets.text("catalog", "technology_dev", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Delta schema base (username appended — matches NB1)")
 dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance name")
 dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")
-dbutils.widgets.dropdown("capacity", "CU_1", ["CU_1", "CU_2", "CU_4", "CU_8"], "Instance capacity")
+dbutils.widgets.dropdown("capacity", "CU_2", ["CU_1", "CU_2", "CU_4", "CU_8"], "Instance capacity (shared instance — CU_2+ for a cohort)")
 @@@CODE
 # Now read the widgets and derive the per-user names.
 # Per-user identity (deterministic). The Lakebase *instance* is shared (one is
