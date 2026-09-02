@@ -255,6 +255,14 @@ app's service principal what it needs: the **database** resource → a Lakebase 
 network access; **genie_space** → `CAN_RUN`; each **serving_endpoint** → `CAN_QUERY`.
 
 Creating the app provisions compute (a few minutes); deploying builds and starts it.
+
+> **Lakebase resource needs `MANAGE` on the instance.** Attaching the **database**
+> resource requires `MANAGE` (or `CAN_MANAGE`) on the Lakebase *instance* — which you
+> won't have on the **shared** `abi-hackathon-lakebase` you don't own. The cell below
+> handles this: if the attach is denied it **retries without the Lakebase resource**
+> (Genie + forecast tabs still work) and tells you what an admin needs to do.
+> **Facilitators:** grant participants `CAN_MANAGE` on the instance (or attach the
+> Database resource for them) so the app's Lakebase tabs connect.
 @@@CODE
 from databricks.sdk.service.apps import (
     App, AppResource, AppResourceDatabase,
@@ -276,14 +284,32 @@ if KA_ENDPOINT:  # only attach the KA endpoint if you created one (Notebook 3)
     resources.append(AppResource(name="knowledge_assistant", serving_endpoint=AppResourceServingEndpoint(
         name=KA_ENDPOINT, permission=_SEP.CAN_QUERY)))
 
+def _create(res):
+    w.apps.create_and_wait(App(
+        name=APP_NAME, description="ABI Genie + Lakebase + Knowledge Assistant + forecast app",
+        resources=res))
+
 if APP_NAME in [a.name for a in w.apps.list()]:
     print(f"App '{APP_NAME}' already exists — skipping create (re-deploy below).")
 else:
     print(f"Creating '{APP_NAME}' with {len(resources)} resources — provisioning compute (~5-10 min)…")
-    w.apps.create_and_wait(App(
-        name=APP_NAME, description="ABI Genie + Lakebase + Knowledge Assistant + forecast app",
-        resources=resources))
-    print("App compute is ready.")
+    try:
+        _create(resources)
+        print("App compute is ready (all resources attached).")
+    except Exception as e:  # noqa: BLE001
+        # Attaching the **Lakebase database** resource needs MANAGE on the *instance*.
+        # On a SHARED instance you don't own (the workshop default), you won't have it
+        # ("User needs MANAGE permission on the resource"). Retry without the lakebase
+        # resource so the app still creates with Genie + the serving endpoints.
+        if APP_NAME in [a.name for a in w.apps.list()]:
+            raise  # app half-created for some other reason — surface it
+        print(f"⚠️  Couldn't attach every resource: {str(e).splitlines()[0][:130]}")
+        print("    Retrying WITHOUT the Lakebase resource (needs MANAGE on the shared instance).")
+        _create([r for r in resources if r.name != "lakebase"])
+        print("App created — but the **Lakebase resource is NOT attached**, so the app's")
+        print("Lakebase tabs won't connect until an admin (instance owner) attaches the")
+        print("Database resource, or grants you CAN_MANAGE on the instance and you re-run.")
+        print("Genie + forecast tabs work regardless.")
 @@@CODE
 from databricks.sdk.service.apps import AppDeployment
 
