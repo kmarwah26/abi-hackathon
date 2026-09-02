@@ -267,64 +267,35 @@ def delta_to_lakebase():
 
 
 def lakebase_app_schema():
-    """The `app` schema: synced (read-only) vs native (writable) — notebook 5, Step 4/5."""
-    body = _text(30, 26, "The app schema: two kinds of table for two jobs", size=15, weight="700")
-    panel_h = 296
-    # Left panel: SYNCED from Delta — read-only, managed by Unity Catalog.
-    body += _box(30, 48, 380, panel_h, [""], family=DELTA, rx=14)
-    body += _text(220, 76, "Synced from Delta (read-only)", size=13, fill=INK, anchor="middle", weight="700")
-    body += _text(220, 96, "materialized by a Lakeflow pipeline · appears in Unity Catalog",
-                  size=10, fill=MUTE, anchor="middle")
-    synced = [
+    """The `app` schema Lakebase holds, grouped by who fills it — notebook 5, Step 4."""
+    body = _text(30, 26, "The app schema in Lakebase — copied in vs written by the app", size=15, weight="700")
+    panel_h = 250
+    # Left panel: copied from Delta (Notebooks 4/5).
+    body += _box(30, 52, 380, panel_h, [""], family=DELTA, rx=14)
+    body += _text(220, 80, "Copied from Delta (Notebooks 4 & 5)", size=13, fill=INK, anchor="middle", weight="700")
+    loaded = [
         ("app.products", "reference catalogue (NB1)"),
+        ("app.distributors", "reference · edited in the app"),
         ("app.demand_forecast", "the forecast the app charts (NB4)"),
     ]
-    for i, (name, cap) in enumerate(synced):
-        body += _pill(55, 118 + i*72, 320, 30, name, DELTA)
-        body += _text(60, 166 + i*72, cap, size=11, fill=MUTE)
-    body += _text(55, 300, "You can't write to these — writes go to the native side →",
-                  size=11, fill=MUTE)
-    # Right panel: NATIVE Postgres — the app reads AND writes these.
-    body += _box(440, 48, 380, panel_h, [""], family=LAKE, rx=14)
-    body += _text(630, 76, "Native Postgres (the app writes these)", size=13, fill=INK, anchor="middle", weight="700")
-    body += _text(630, 96, "created with CREATE TABLE · transactional app state",
-                  size=10, fill=MUTE, anchor="middle")
-    native = [
-        ("app.distributors", "reference · edited in the app (NB5 copy)"),
+    for i, (name, cap) in enumerate(loaded):
+        body += _pill(55, 100 + i*62, 320, 30, name, DELTA)
+        body += _text(60, 148 + i*62, cap, size=11, fill=MUTE)
+    # Right panel: written by the app at runtime (Notebook 7).
+    body += _box(440, 52, 380, panel_h, [""], family=LAKE, rx=14)
+    body += _text(630, 80, "Written by the app at runtime (Notebook 7)", size=13, fill=INK, anchor="middle", weight="700")
+    written = [
         ("app.conversations", "one row per Genie Q&A turn"),
         ("app.action_items", "the review / approval queue"),
         ("app.forecast_scenarios", "each what-if the Forecast tab runs"),
     ]
-    for i, (name, cap) in enumerate(native):
-        body += _pill(465, 116 + i*52, 320, 26, name, LAKE)
-        body += _text(470, 152 + i*52, cap, size=10, fill=MUTE)
-    body += _text(30, 372,
-                  "Rule of thumb: sync what only Delta owns (read-only mirrors); create native tables for anything the app writes.",
+    for i, (name, cap) in enumerate(written):
+        body += _pill(465, 100 + i*62, 320, 30, name, LAKE)
+        body += _text(470, 148 + i*62, cap, size=11, fill=MUTE)
+    body += _text(30, 322,
+                  "Reference rows are copied in with to_sql; the write-back tables are the transactional state Lakebase exists for.",
                   size=11, fill=MUTE)
-    return _svg(850, 392, body)
-
-
-def synced_table_flow():
-    """How a Lakebase synced table is built from a Delta source — notebook 5, Step 5."""
-    body = _text(30, 26, "How a synced table is built (Delta → Lakebase, read-only)", size=15, weight="700")
-    steps = [
-        (["Delta table (UC)", "products /", "demand_forecast"], DELTA),
-        (["Lakeflow pipeline", "SNAPSHOT:", "full refresh"], APP),
-        (["Database Catalog", "registers the DB", "in Unity Catalog"], KNOW),
-        (["Synced table", "app.products", "in Lakebase PG"], LAKE),
-        (["App reads it", "as normal", "Postgres (SELECT)"], NEUTRAL),
-    ]
-    bw, bh, gap, y = 150, 96, 22, 58
-    xs = [30 + i * (bw + gap) for i in range(len(steps))]
-    for i, (lbl, fam) in enumerate(steps):
-        body += _box(xs[i], y, bw, bh, lbl, family=fam, title_size=13, sub_size=11)
-        if i < len(steps) - 1:
-            body += _arrow(xs[i] + bw, y + bh / 2, xs[i+1], y + bh / 2)
-    body += _text(30, y + bh + 28,
-                  "SNAPSHOT = initial full load + accelerated refresh when you re-run it (no Change Data Feed needed). "
-                  "The table shows up in Unity Catalog; the app just SELECTs it.",
-                  size=11, fill=MUTE)
-    return _svg(30 + len(steps)*bw + (len(steps)-1)*gap + 30, 210, body)
+    return _svg(850, 342, body)
 
 
 def app_architecture():
@@ -533,7 +504,6 @@ DIAGRAMS = {
     "lakebase_vs_delta": lakebase_vs_delta,
     "delta_to_lakebase": delta_to_lakebase,
     "lakebase_app_schema": lakebase_app_schema,
-    "synced_table_flow": synced_table_flow,
     "app_architecture": app_architecture,
     "request_flow": request_flow,
     "genie_code_flow": genie_code_flow,
