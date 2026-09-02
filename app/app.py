@@ -46,6 +46,17 @@ from sqlalchemy import create_engine, text
 # --------------------------------------------------------------------------
 GENIE_SPACE_ID = os.environ.get("GENIE_SPACE_ID", "")
 
+# Auth mode for Genie + Knowledge Assistant. Default is on-behalf-of-user (OBO): the
+# app calls them AS THE SIGNED-IN USER, so Unity Catalog enforces each person's
+# permissions — but that needs an admin to enable app user-authorization and allowlist
+# the `genie`/`sql`/`serving` scopes (app.yaml). On locked-down workspaces where that
+# isn't available, set USE_OBO=false in app.yaml: the app then uses its SERVICE
+# PRINCIPAL for Genie/KA too (governance becomes SP-level, and no OBO scopes needed —
+# the SP already has CAN_RUN on the space and CAN_QUERY on the KA endpoint via its
+# app resources). Genie's SQL still runs on the space's warehouse, so the SP needs
+# CAN_USE on that warehouse either way.
+USE_OBO = os.environ.get("USE_OBO", "true").strip().lower() not in ("false", "0", "no")
+
 # Lakebase: we derive the host and Postgres user from the instance itself via the
 # SDK, rather than trusting injected PG* env vars (whose values/mapping vary by
 # how the Database resource is wired). We only need the instance name and the
@@ -140,6 +151,9 @@ def get_user_client() -> tuple[WorkspaceClient, bool]:
     rotates ~hourly, so a process-wide cache would hand one user's identity to
     others. WorkspaceClient construction does no network I/O, so per-call is fine.
     """
+    if not USE_OBO:
+        # SP-only mode: run Genie/KA as the app service principal (no OBO scopes needed).
+        return get_workspace_client(), False
     token = user_access_token()
     if token:
         return WorkspaceClient(token=token, auth_type="pat"), True

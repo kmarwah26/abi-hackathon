@@ -18,6 +18,22 @@ env:
     value: "01f1a48a4a35108ebbe9c940cdc11a8a"
 
   # ----------------------------------------------------------------------
+  # Auth mode for Genie + Knowledge Assistant.
+  #   "true"  (default) → on-behalf-of-user (OBO): call them AS THE SIGNED-IN USER,
+  #                       so Unity Catalog enforces each person's own permissions.
+  #                       Requires an admin to enable app user-authorization and
+  #                       allowlist the `genie`/`sql`/`serving` scopes (see below).
+  #   "false"          → SP-only: call them as the app's SERVICE PRINCIPAL. No OBO
+  #                       scopes needed (use this on locked-down workspaces where an
+  #                       admin can't enable OBO). Governance is then SP-level, and
+  #                       the SP needs CAN_RUN on the Genie space + CAN_QUERY on the
+  #                       KA endpoint (both attached as app resources) + CAN_USE on
+  #                       the Genie space's warehouse.
+  # ----------------------------------------------------------------------
+  - name: USE_OBO
+    value: "true"
+
+  # ----------------------------------------------------------------------
   # Agent Bricks Knowledge Assistant serving-endpoint name (from Notebook 3).
   # Answers policy / how-to questions from the knowledge_base Volume docs.
   # Leave blank to disable the "Ask the docs" tab.
