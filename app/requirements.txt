@@ -1,5 +1,5 @@
 streamlit>=1.38.0
-databricks-sdk>=0.94.0
+databricks-sdk[openai]>=0.94.0
 SQLAlchemy>=2.0.0
 psycopg2-binary>=2.9.9
 pandas>=2.0.0

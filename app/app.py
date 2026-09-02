@@ -297,18 +297,56 @@ def ask_genie(w: WorkspaceClient, question: str, conversation_id: str | None):
 # --------------------------------------------------------------------------
 # Knowledge Assistant (Agent Bricks) — document Q&A
 # --------------------------------------------------------------------------
+def _ka_answer_text(resp) -> str:
+    """Pull the answer text from a responses result (object or dict) or a chat result."""
+    txt = getattr(resp, "output_text", None)
+    if txt:
+        return txt
+    # OpenAI *responses* shape: .output → items → content → text
+    output = getattr(resp, "output", None) or (resp.get("output") if isinstance(resp, dict) else None)
+    parts = []
+    for item in (output or []):
+        content = getattr(item, "content", None) or (item.get("content") if isinstance(item, dict) else None)
+        for c in (content or []):
+            t = getattr(c, "text", None) or (c.get("text") if isinstance(c, dict) else None)
+            if t:
+                parts.append(t)
+    if parts:
+        return "\n".join(parts)
+    # chat.completions shape
+    choices = getattr(resp, "choices", None)
+    if choices:
+        try:
+            return choices[0].message.content
+        except Exception:  # noqa: BLE001
+            try:
+                return choices[0]["message"]["content"]
+            except Exception:  # noqa: BLE001
+                pass
+    return str(resp)
+
+
 def ask_ka(w: WorkspaceClient, question: str, history: list | None = None):
     """Ask the Agent Bricks Knowledge Assistant. Returns (answer, updated_history).
 
-    `w` is the caller-supplied client — the user-scoped (OBO) client in
-    Databricks Apps, so the endpoint is queried under the end user's identity
-    (the user needs CAN_QUERY on the endpoint). Not cached: the OpenAI client is
-    derived from the per-user token, so it must be built per request.
+    `w` is the caller-supplied client (SP or, in OBO mode, the user-scoped client).
+    Agent Bricks agents are served as ResponsesAgents, so we use the OpenAI
+    **responses** API; we fall back to the raw SDK query(input=...) (no openai package
+    needed) and finally chat.completions — so it works across endpoint/SDK variants.
     """
-    client = w.serving_endpoints.get_open_ai_client()
     messages = (history or []) + [{"role": "user", "content": question}]
-    resp = client.chat.completions.create(model=KA_ENDPOINT, messages=messages)
-    answer = resp.choices[0].message.content
+    try:
+        client = w.serving_endpoints.get_open_ai_client()          # needs the openai extra
+        resp = client.responses.create(model=KA_ENDPOINT, input=messages)
+        answer = _ka_answer_text(resp)
+    except Exception:  # noqa: BLE001
+        try:
+            resp = w.serving_endpoints.query(name=KA_ENDPOINT, input=messages)  # raw SDK, no openai
+            answer = _ka_answer_text(resp)
+        except Exception:  # noqa: BLE001
+            client = w.serving_endpoints.get_open_ai_client()
+            resp = client.chat.completions.create(model=KA_ENDPOINT, messages=messages)
+            answer = _ka_answer_text(resp)
     return answer, messages + [{"role": "assistant", "content": answer}]
 
 
