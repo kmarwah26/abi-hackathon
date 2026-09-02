@@ -1,12 +1,12 @@
 @@@MD
 # 04 · Demand Forecasting with MLflow
 
-**Pre-Hackathon Enablement · Notebook 4 of 7**
+**Pre-Hackathon Enablement · Notebook 4 of 6**
 
 This is the deck's **Classical ML with MLflow** pattern (Demand / Freight
 Forecasting). It needs only the synthetic **`orders`** data from **Notebook 1**.
 The forecast it produces is written to a **Delta table** that **Notebook 5**
-(Lakebase) loads and the **Notebook 7** app charts — so this model becomes a live
+(Lakebase) loads and the **Notebook 6** app charts — so this model becomes a live
 tile in the final app.
 
 @@@IMG:series_overview_4
@@ -290,7 +290,7 @@ display(forecast.sort_values(["month", "segment"]))
 
 @@@CODE
 # Persist the forecast to Delta. Notebook 5 (Lakebase) copies this into Postgres
-# and the Notebook 7 app charts it — so this write is what makes the model show up
+# and the Notebook 6 app charts it — so this write is what makes the model show up
 # in the app. Columns: segment, month (date), forecast_cases.
 (spark.createDataFrame(forecast)
       .write.format("delta").mode("overwrite").option("overwriteSchema", "true")
@@ -300,7 +300,7 @@ print(f"Wrote {FQ}.demand_forecast ({len(forecast)} rows) — Notebook 5 loads i
 @@@MD
 ## Step 6 · Register a serving copy + create a Model Serving endpoint
 
-The Notebook 7 app does **live what-if inference** — a user types recent volumes
+The Notebook 6 app does **live what-if inference** — a user types recent volumes
 and sees a prediction instantly. That calls a **Model Serving endpoint**, not
 `fe.score_batch`. Because the app runs on serverless with **no Spark** (so no
 feature-store *lookup*), we register a **plain-sklearn copy** of the same pipeline
@@ -336,7 +336,7 @@ with mlflow.start_run(run_name="demand_gbr_serving"):
 SERVING_VERSION = str(max(int(v.version) for v in
     MlflowClient(registry_uri="databricks-uc").search_model_versions(f"name='{SERVING_MODEL}'")))
 print(f"Registered {SERVING_MODEL} v{SERVING_VERSION}")
-print(f"⇒ In app.yaml (Notebook 7) set: FORECAST_ENDPOINT = {FORECAST_ENDPOINT}")
+print(f"⇒ In app.yaml (Notebook 6) set: FORECAST_ENDPOINT = {FORECAST_ENDPOINT}")
 print(f"⇒ In app.yaml set: FORECAST_BASE_YEAR = {BASE_YEAR}  (matches the model's `trend` feature).")
 @@@CODE
 # Create (or update) the endpoint — scale-to-zero keeps cost ~$0 when idle.
@@ -376,7 +376,7 @@ registered to Unity Catalog. It's intentionally simple — here's where to take 
 - **Validation:** proper **backtesting** (rolling-origin) instead of a single holdout.
 - **Serving:** Step 6 stands up a **Model Serving** endpoint (`abi-demand-forecast`)
   for the app's live what-if inference; you can also batch-score on a schedule with
-  `fe.score_batch`. Note the `FORECAST_BASE_YEAR` printed above for Notebook 7.
+  `fe.score_batch`. Note the `FORECAST_BASE_YEAR` printed above for Notebook 6.
 - **Ops:** tune hyperparameters, add a UC model **alias** (champion), monitor drift.
 
 **Next → Notebook 5:** stand up **Lakebase** (managed Postgres) for the app's

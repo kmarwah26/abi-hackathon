@@ -15,7 +15,7 @@ step skips gracefully if the asset is already gone.
 > assets. Set the **`confirm`** widget to **`yes`** to actually run it.
 
 **What it deletes (all per-user):**
-- App `abi-genie-app-<you>` and the `abi-autoshutdown-<you>` job (Notebook 7)
+- App `abi-genie-app-<you>` and the `abi-autoshutdown-<you>` job (Notebook 6)
 - Serving endpoints: `abi-demand-forecast-<you>` (Notebook 4) and, if you name it, your Knowledge Assistant endpoint (Notebook 3)
 - The Genie space for your schema (Notebook 2)
 - The Lakebase **logical DB** `abi_app_<you>` (Notebook 5) — the **shared instance is left running**
@@ -75,7 +75,7 @@ print(f"\nconfirm = {'yes — proceeding' if CONFIRM else 'no — set it to yes 
 assert CONFIRM, "Set the `confirm` widget to 'yes', then re-run from here."
 
 @@@MD
-## Step 2 · Delete the app + its auto-shutdown job (Notebook 7)
+## Step 2 · Delete the app + its auto-shutdown job (Notebook 6)
 @@@CODE
 try:
     w.apps.delete(name=APP_NAME)
@@ -83,7 +83,7 @@ try:
 except Exception as e:  # noqa: BLE001 — already gone / never created is fine
     print(f"app {APP_NAME}: {str(e).splitlines()[0][:100]}")
 
-# The one-shot auto-shutdown job (Notebook 7, Step 7).
+# The one-shot auto-shutdown job (Notebook 6, Step 7).
 _jobname = f"abi-autoshutdown-{_user.split('@')[0].replace('.', '_')}"
 _found = False
 for j in w.jobs.list():

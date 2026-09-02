@@ -92,28 +92,29 @@ def _pill(x, y, w, h, label, family=NEUTRAL):
 # ==========================================================================
 
 def series_overview(highlight=None):
-    """The 7-notebook journey — shown at the top of every notebook.
+    """The 6-notebook journey — shown at the top of every numbered notebook.
 
-    Pass ``highlight=N`` (1-7) to spotlight the current notebook: its box is drawn
+    Pass ``highlight=N`` (1-6) to spotlight the current notebook: its box is drawn
     bold with a "you are here" tag and every other step is dimmed. With no
-    ``highlight`` all seven read at equal weight (a plain map of the series).
+    ``highlight`` all six read at equal weight (a plain map — used by the unnumbered
+    Genie Code notebook, which is a separate/optional track off Notebooks 1-2).
     """
     margin = 22
-    bw, bh, gap, y = 138, 96, 16, 52
-    xs = [margin + i * (bw + gap) for i in range(7)]
-    fams = [DELTA, GENIE, KNOW, ML, LAKE, CODE, APP]
+    bw, bh, gap, y = 150, 96, 18, 52
+    n = 6
+    xs = [margin + i * (bw + gap) for i in range(n)]
+    fams = [DELTA, GENIE, KNOW, ML, LAKE, APP]
     labels = [
         ["1 · Data", "synthetic AB", "Delta + Volume"],
         ["2 · Genie", "metadata →", "Genie space"],
         ["3 · Knowledge", "Assistant", "docs Q&A"],
         ["4 · Forecast", "MLflow", "demand model"],
         ["5 · Lakebase", "managed", "Postgres"],
-        ["6 · Genie Code", "governed", "assets"],
-        ["7 · App", "Streamlit:", "all of it"],
+        ["6 · App", "Streamlit:", "all of it"],
     ]
     title = "The pre-hackathon journey"
     if highlight:
-        title += f"  ·  you are on notebook {highlight} of 7"
+        title += f"  ·  you are on notebook {highlight} of {n}"
     body = _text(margin, 30, title, size=14, weight="700")
     for i, x in enumerate(xs):
         step = i + 1
@@ -128,9 +129,9 @@ def series_overview(highlight=None):
             body += (f'<rect x="{x-3}" y="{y-3}" width="{bw+6}" height="{bh+6}" rx="15" '
                      f'fill="none" stroke="{stroke}" stroke-width="3.5"/>')
             body += _pill(x + bw/2 - 52, y + bh + 8, 104, 22, "▸ you are here", family=fams[i])
-        if i < 6:
+        if i < n - 1:
             body += _arrow(x + bw, y + bh/2, xs[i+1], y + bh/2)
-    return _svg(margin * 2 + 7 * bw + 6 * gap, 190, body)
+    return _svg(margin * 2 + n * bw + (n - 1) * gap, 190, body)
 
 
 def forecast_flow():
@@ -236,6 +237,54 @@ def genie_metadata():
     return _svg(850, 300, body)
 
 
+def reverse_etl_flow():
+    """Three ways to move Delta data into Lakebase — notebook 5, going-further."""
+    body = _text(30, 26, "Reverse ETL: getting Delta data into Lakebase (3 ways)", size=15, weight="700")
+    # Source (left) and target (right).
+    body += _box(30, 110, 170, 96, ["Delta tables", "(Unity Catalog)", "analytics source"], family=DELTA, sub_size=11)
+    body += _box(700, 110, 170, 96, ["Lakebase", "(Postgres)", "app.* tables"], family=LAKE, sub_size=11)
+    # Three methods in the middle.
+    methods = [
+        (["1 · to_sql copy", "one-time / re-run", "(this notebook)"], APP, 40),
+        (["2 · Scheduled Job", "periodic batch", "Lakeflow / Jobs"], NEUTRAL, 128),
+        (["3 · Synced table", "managed, continuous", "needs a DB catalog"], LAKE, 216),
+    ]
+    for lbl, fam, y in methods:
+        body += _box(300, y, 250, 72, lbl, family=fam, title_size=13, sub_size=11)
+        body += _arrow(200, 158, 300, y + 36, color="#C5D0D6")   # Delta → method
+        body += _arrow(550, y + 36, 700, 158, color="#C5D0D6")   # method → Lakebase
+    body += _text(30, 300,
+                  "Pick by freshness: one-time for a demo, scheduled for daily reference data, synced for near-real-time. "
+                  "Analytics stays in Delta — Lakebase just serves current values to the app.",
+                  size=11, fill=MUTE)
+    return _svg(890, 320, body)
+
+
+def lakebase_permissions():
+    """Who can touch Lakebase, and the grants each identity needs — notebook 5."""
+    body = _text(30, 26, "Permissions: who touches Lakebase, and what they need", size=15, weight="700")
+    # You.
+    body += _box(30, 52, 380, 150, [""], family=DELTA, rx=14)
+    body += _text(220, 78, "You (your Databricks identity)", size=13, fill=INK, anchor="middle", weight="700")
+    you = ["• Create the instance, logical DB, tables", "• Run the Delta → Postgres copy (Step 5)",
+           "• Needs: Lakebase access + SELECT on the", "   Delta source (you own your schema)"]
+    for i, t in enumerate(you):
+        body += _text(52, 106 + i*22, t, size=12, fill=INK)
+    # App SP.
+    body += _box(440, 52, 380, 150, [""], family=LAKE, rx=14)
+    body += _text(630, 78, "App service principal (Notebook 6)", size=13, fill=INK, anchor="middle", weight="700")
+    sp = ["• Reads/writes app.* tables at runtime", "• Needs the Database *resource* (role +",
+          "   network) AND Postgres GRANTs", "• All granted in Notebook 6, Step 5"]
+    for i, t in enumerate(sp):
+        body += _text(462, 106 + i*22, t, size=12, fill=INK)
+    # Synced-table note.
+    body += _box(30, 216, 790, 54, [""], family=CODE, rx=12)
+    body += _text(48, 240, "Synced tables only:", size=12, fill=INK, weight="700")
+    body += _text(185, 240, "registering a database catalog needs CREATE CATALOG on the metastore — "
+                            "usually a workspace/metastore admin, not each participant.", size=12, fill=INK)
+    return _svg(850, 288, body)
+
+
 def lakebase_vs_delta():
     """When Lakebase vs Delta — notebook 3."""
     body = _text(30, 28, "When Lakebase, when Delta?", size=15, weight="700")
@@ -281,9 +330,9 @@ def lakebase_app_schema():
     for i, (name, cap) in enumerate(loaded):
         body += _pill(55, 100 + i*62, 320, 30, name, DELTA)
         body += _text(60, 148 + i*62, cap, size=11, fill=MUTE)
-    # Right panel: written by the app at runtime (Notebook 7).
+    # Right panel: written by the app at runtime (Notebook 6).
     body += _box(440, 52, 380, panel_h, [""], family=LAKE, rx=14)
-    body += _text(630, 80, "Written by the app at runtime (Notebook 7)", size=13, fill=INK, anchor="middle", weight="700")
+    body += _text(630, 80, "Written by the app at runtime (Notebook 6)", size=13, fill=INK, anchor="middle", weight="700")
     written = [
         ("app.conversations", "one row per Genie Q&A turn"),
         ("app.action_items", "the review / approval queue"),
@@ -451,7 +500,7 @@ def lakebase_connection():
     body += _box(590, 105, 210, 130, ["database: abi_app", "schema: app", "app.action_items", "app.conversations", "app.demand_forecast"], family=LAKE, sub_size=11)
     body += _arrow(500, 193, 590, 170)
     body += _text(30, 282,
-                  "The token is the Postgres password; the Databricks identity's role IS its username. Notebook 7 grants the app's SP.",
+                  "The token is the Postgres password; the Databricks identity's role IS its username. Notebook 6 grants the app's SP.",
                   size=11, fill=MUTE)
     return _svg(830, 305, body)
 
@@ -566,13 +615,15 @@ DIAGRAMS = {
     # Per-notebook journey maps: series_overview_1 .. series_overview_7 each
     # spotlight their own step. Wired in via @@@IMG:series_overview_<n>.
     **{f"series_overview_{_n}": (lambda n=_n: series_overview(highlight=n))
-       for _n in range(1, 8)},
+       for _n in range(1, 7)},
     "data_model": data_model,
     "source_to_delta": source_to_delta,
     "genie_metadata": genie_metadata,
     "lakebase_vs_delta": lakebase_vs_delta,
     "delta_to_lakebase": delta_to_lakebase,
     "lakebase_app_schema": lakebase_app_schema,
+    "reverse_etl_flow": reverse_etl_flow,
+    "lakebase_permissions": lakebase_permissions,
     "app_architecture": app_architecture,
     "request_flow": request_flow,
     "genie_code_flow": genie_code_flow,

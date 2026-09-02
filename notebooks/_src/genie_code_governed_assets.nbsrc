@@ -1,7 +1,7 @@
 @@@MD
-# 06 · Genie Code — Prompt Playbook for Governed Assets
+# Genie Code — Prompt Playbook for Governed Assets (optional track)
 
-**Pre-Hackathon Enablement · Notebook 6 of 7**
+**Pre-Hackathon Enablement · Optional / parallel track** (not numbered — needs only Notebooks 1–2)
 
 The deck's last topic: *"Genie Code writing and checking pipeline — SQL and App
 code under Unity Catalog governance. **A person reviews and approves that code
@@ -14,7 +14,7 @@ metadata, it proposes SQL / code and can **create or modify governed assets**
 (views, metric views, functions, tables), with permissions, lineage, and audit
 all enforced by Unity Catalog.
 
-@@@IMG:series_overview_6
+@@@IMG:series_overview
 
 Because it's interactive, you don't call it from *this* notebook. Instead, this
 notebook is a **playbook**: ready-to-paste prompts (grounded in your beverage
@@ -175,6 +175,6 @@ Unity Catalog metadata. Your job: **prompt it well, review what it proposes, and
 approve before it ships.** Keep this playbook of prompts handy during the
 hackathon and adapt them to your own tables.
 
-That's the **governed AI-assisted development** pattern. You've now covered every
-building block — data, a Genie agent, a Knowledge Assistant, a forecast, Lakebase,
-and Genie Code. **Next → Notebook 7** assembles them into one Databricks App.
+That's the **governed AI-assisted development** pattern — a separate, optional track
+off Notebooks 1–2. The numbered series (Data → Genie → Knowledge Assistant →
+Forecast → Lakebase) comes together in **Notebook 6 · the Databricks App**.

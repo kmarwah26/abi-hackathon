@@ -3,7 +3,7 @@
 
 Stops the **Databricks App** and the **Lakebase instance** so they stop billing.
 Run it **manually anytime**, or let the scheduled *auto-shutdown* job (created in
-Notebook 7, Step 7) run it for you after a few hours.
+Notebook 6, Step 7) run it for you after a few hours.
 
 Restart later from the UI, or by re-running Notebooks 5 (Lakebase) and 7 (App).
 

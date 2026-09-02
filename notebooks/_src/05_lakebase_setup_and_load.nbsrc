@@ -1,7 +1,7 @@
 @@@MD
 # 05 · Lakebase — Managed Postgres for App State
 
-**Pre-Hackathon Enablement · Notebook 5 of 7**
+**Pre-Hackathon Enablement · Notebook 5 of 6**
 
 Genie answers questions about your *analytical* Delta tables. But an application
 also needs **transactional state**: review queues, approvals, drafts, and — for
@@ -12,7 +12,7 @@ Postgres) is for.
 
 ### When Lakebase, when Delta? (from the deck)
 Reach for Lakebase for **operational, transactional** state — and keep analytics
-in Delta. The app in Notebook 7 uses both: Genie reads Delta, the app writes its
+in Delta. The app in Notebook 6 uses both: Genie reads Delta, the app writes its
 conversation log to Lakebase.
 
 @@@IMG:lakebase_vs_delta
@@ -150,7 +150,7 @@ Postgres user.
 
 @@@IMG:lakebase_connection
 
-This is exactly how the **app** (Notebook 7) connects, too — same engine, same
+This is exactly how the **app** (Notebook 6) connects, too — same engine, same
 short-lived token — except it authenticates as the app's **service principal**
 rather than your user. The tables on the right are what we create in Steps 3–5.
 @@@CODE
@@ -244,7 +244,7 @@ CREATE TABLE IF NOT EXISTS app.conversations (
     created_at        TIMESTAMP DEFAULT NOW()
 );
 
--- Transactional app state written by the app's "Action items" tab (Notebook 7):
+-- Transactional app state written by the app's "Action items" tab (Notebook 6):
 -- a review/approval queue — the kind of read/write workload Lakebase exists for.
 CREATE TABLE IF NOT EXISTS app.action_items (
     id          SERIAL PRIMARY KEY,
@@ -255,7 +255,7 @@ CREATE TABLE IF NOT EXISTS app.action_items (
     created_at  TIMESTAMP DEFAULT NOW()
 );
 
--- What-if scenarios written by the app's Forecast tab (Notebook 7): each live
+-- What-if scenarios written by the app's Forecast tab (Notebook 6): each live
 -- inference call against the demand-forecast serving endpoint is saved here.
 CREATE TABLE IF NOT EXISTS app.forecast_scenarios (
     id               BIGSERIAL PRIMARY KEY,
@@ -284,7 +284,7 @@ print("Tables created: app.products, app.distributors, app.conversations, "
 
 Read the Delta tables into pandas and bulk-load them into Lakebase. For the modest
 reference tables here, pandas `to_sql` is perfectly fine. The **`demand_forecast`**
-table (Notebook 4) is copied the same way so the Notebook 7 app can chart it from
+table (Notebook 4) is copied the same way so the Notebook 6 app can chart it from
 Postgres. (`if_exists="replace"` = drop + reload, so re-running the notebook is safe.)
 
 @@@IMG:delta_to_lakebase
@@ -325,6 +325,44 @@ with app_engine.connect() as c:
         print("  ", row)
 
 @@@MD
+## Going further · Reverse ETL & permissions
+
+Copying data from Delta into Lakebase — as Step 5 did — is a small example of
+**reverse ETL**: moving *analytical* data from the lakehouse into an *operational*
+store an app can serve with low latency. There's a spectrum of ways to do it:
+
+@@@IMG:reverse_etl_flow
+
+- **1 · `to_sql` copy** (what this notebook does) — a one-time / on-demand snapshot.
+  Great for a demo or reference data that rarely changes; re-run to refresh.
+- **2 · Scheduled Job** — wrap the copy in a Databricks **Job** (or a Lakeflow
+  pipeline) on a schedule so Postgres refreshes nightly/hourly. Still your code.
+- **3 · Synced table** — a **managed, UC-governed** Delta→Postgres mirror that keeps
+  itself fresh (snapshot / triggered / continuous): no copy code, and it appears in
+  Unity Catalog — but it's **read-only**, and registering it needs a *database
+  catalog* (see permissions below).
+
+Rule of thumb: **copy or sync what only Delta owns (read-only reference + model
+output); keep native Postgres tables for anything the app writes.**
+
+### Permissions & the steps each path needs
+
+@@@IMG:lakebase_permissions
+
+- **You (running these notebooks)** need Lakebase access + `SELECT` on your Delta
+  source (you own your schema) — that covers Steps 1–6 here.
+- **The app's service principal** (Notebook 6) needs the **Database resource**
+  (Lakebase role + network) *and* Postgres `GRANT`s on the `app.*` tables — all done
+  in **Notebook 6, Step 5**. Attaching the resource is what gives the SP its role.
+- **Synced tables only:** registering a **database catalog** (so the synced table is
+  a governed UC object) needs **`CREATE CATALOG` on the metastore** — usually a
+  workspace/metastore admin, not each participant. The steps: **(1)** an admin
+  registers the database catalog once, **(2)** create the synced table from the Delta
+  source with a primary key + a scheduling policy (SNAPSHOT / TRIGGERED / CONTINUOUS),
+  **(3)** grant the app SP `SELECT` on it. Without `CREATE CATALOG`, use the `to_sql`
+  copy above.
+
+@@@MD
 ## ✅ Recap & what's next
 
 You provisioned a **Lakebase** instance, created the `abi_app` database with an
@@ -342,5 +380,7 @@ You provisioned a **Lakebase** instance, created the `abi_app` database with an
   review queue) go to Lakebase.
 
 You've now built every data + AI piece the app needs (Genie, Knowledge Assistant,
-forecast, Lakebase). **Next → Notebook 6:** **Genie Code** — the governed,
-AI-assisted development pattern — before Notebook 7 assembles the full app.
+forecast, Lakebase). **Next → Notebook 6:** the **Databricks App** that wires Genie +
+Knowledge Assistant + forecast + Lakebase into one UI. *(There's also an optional,
+unnumbered **Genie Code** notebook — a governed AI-assisted-development playbook that
+needs only Notebooks 1–2; do it any time.)*

@@ -1,7 +1,7 @@
 @@@MD
 # 02 · Genie Agent + Metadata Best Practices
 
-**Pre-Hackathon Enablement · Notebook 2 of 7**
+**Pre-Hackathon Enablement · Notebook 2 of 6**
 
 A Genie space is only as good as the **metadata** behind it. This notebook turns
 the tables from Notebook 1 into a governed **Genie agent**: rich comments,
@@ -301,7 +301,7 @@ else:
     print(f"Created Genie space: {GENIE_SPACE_ID}")
 
 print(f"\nSpace URL: {w.config.host}/genie/rooms/{GENIE_SPACE_ID}")
-print(">>> Save this GENIE_SPACE_ID — Notebook 7's app needs it. <<<")
+print(">>> Save this GENIE_SPACE_ID — Notebook 6's app needs it. <<<")
 
 @@@MD
 ### Fallbacks (if `create_space` isn't available or the payload drifts)
@@ -317,7 +317,7 @@ print(">>> Save this GENIE_SPACE_ID — Notebook 7's app needs it. <<<")
 ## Step 6 · Validate via the Conversation API
 
 Query the space with the **Genie Conversation API** — the same calls the app in
-Notebook 7 makes. `GENIE_SPACE_ID` comes from Step 5.
+Notebook 6 makes. `GENIE_SPACE_ID` comes from Step 5.
 
 @@@IMG:genie_conversation
 

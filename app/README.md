@@ -9,7 +9,7 @@ A Databricks App with four tabs:
 
 Every Genie turn is logged to a **Lakebase** (managed Postgres) table.
 
-This is the app deployed by **Notebook 7** of the pre-hackathon enablement
+This is the app deployed by **Notebook 6** of the pre-hackathon enablement
 series. Notebooks 1–5 create the data + docs Volume, the Genie space, the
 Knowledge Assistant, the forecast, and the Lakebase instance/tables this app
 depends on.
@@ -76,10 +76,10 @@ Then attach resources (at create time via `apps create --json`, or in the UI:
 - **Genie space** → permission **Can run**.
 - **Serving endpoint** → your Knowledge Assistant endpoint → permission **Can query**.
 - Grant the app's **service principal** `SELECT` on the curated Unity Catalog
-  tables, and the Lakebase grants in Notebook 7, Step 5.
+  tables, and the Lakebase grants in Notebook 6, Step 5.
 
 Redeploy after attaching resources so the new env vars are picked up. View logs
-at `<app-url>/logz`. See **Notebook 7** for the full scripted create + grant flow.
+at `<app-url>/logz`. See **Notebook 6** for the full scripted create + grant flow.
 
 ## Authorization (on-behalf-of user)
 

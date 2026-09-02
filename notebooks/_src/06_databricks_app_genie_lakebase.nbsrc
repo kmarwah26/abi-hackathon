@@ -1,7 +1,7 @@
 @@@MD
-# 07 · Databricks App — Genie + Lakebase + Knowledge Assistant + Forecast
+# 06 · Databricks App — Genie + Lakebase + Knowledge Assistant + Forecast
 
-**Pre-Hackathon Enablement · Notebook 7 of 7**
+**Pre-Hackathon Enablement · Notebook 6 of 6**
 
 The finale: assemble everything into one **Databricks App** — a Streamlit app with
 four tabs that
@@ -13,7 +13,7 @@ four tabs that
    **live what-if inference** against its Model Serving endpoint (Notebook 4, Step 6), and
 4. logs every Genie turn — and runs a review queue — in **Lakebase** (Notebook 5).
 
-@@@IMG:series_overview_7
+@@@IMG:series_overview_6
 
 ### App anatomy (from the deck)
 - **Connected components:** a Databricks App can call a SQL Warehouse, Model
@@ -522,9 +522,9 @@ You shipped a governed, full-stack pattern end to end:
 - **Notebook 3** → an **Agent Bricks Knowledge Assistant** over the docs (cited answers)
 - **Notebook 4** → a **demand forecast** (MLflow) written to Delta
 - **Notebook 5** → **Lakebase** for transactional app state (and the forecast copy)
-- **Notebook 6** → **Genie Code** for governed, AI-assisted development
-- **Notebook 7** → this **Databricks App** wiring **Genie + Knowledge Assistant +
+- **Notebook 6** → this **Databricks App** wiring **Genie + Knowledge Assistant +
   forecast + Lakebase** into one UI, running as a service principal
+- **Genie Code** (optional, unnumbered) → governed, AI-assisted development off Notebooks 1–2
 
 **This is a reusable MVP pattern.** Several hackathon tracks are variations on it:
 - *EPR Reporting* → Genie over curated reporting tables

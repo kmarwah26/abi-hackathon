@@ -1,7 +1,7 @@
 @@@MD
 # 03 · Agent Bricks — Knowledge Assistant
 
-**Pre-Hackathon Enablement · Notebook 3 of 7**
+**Pre-Hackathon Enablement · Notebook 3 of 6**
 
 Notebook 2's Genie agent answers questions about your **structured** tables. But
 much of the real supply-chain knowledge lives in **documents** — the policies and
@@ -13,7 +13,7 @@ back to the source docs.
 @@@IMG:series_overview_3
 
 It needs only the **`knowledge_base` Volume from Notebook 1** — the PDFs you
-generated there. The **app in Notebook 7** will call this assistant alongside
+generated there. The **app in Notebook 6** will call this assistant alongside
 Genie, so keep the endpoint name it produces.
 
 > **You won't create the endpoint from code here.** Agent Bricks builds and deploys
@@ -230,7 +230,7 @@ The Knowledge Assistant runs **inside** Unity Catalog governance:
 - **Lineage & audit.** The endpoint, the vector index, and the Volume are all UC
   assets, so usage and lineage are captured.
 
-**Wire it into the Databricks App (Notebook 7).** The app adds the assistant's
+**Wire it into the Databricks App (Notebook 6).** The app adds the assistant's
 serving endpoint as a **resource** (the app SP gets `CAN_QUERY`) and a *"Docs"*
 tab that calls `ask_ka(...)` exactly like above — so one app answers both **data**
 questions (Genie) and **policy** questions (Knowledge Assistant). Note the
