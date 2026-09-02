@@ -54,11 +54,12 @@ Same data domain, same governance — two complementary agents. (An Agent Bricks
 @@@MD
 ## Step 0 · Upgrade the SDK
 
-We query the deployed assistant with the SDK's OpenAI-compatible client
-(`get_open_ai_client`), which needs a recent `databricks-sdk`. Upgrade once at
-the top (`restartPython` clears state, so run this **first**).
+We query the deployed assistant with the **`databricks-openai`** client (the current,
+non-deprecated way — it speaks the OpenAI **responses** API that Agent Bricks agents
+use). Install it plus a recent `databricks-sdk`, once, at the top (`restartPython`
+clears state, so run this **first**).
 @@@CODE
-%pip install --quiet --upgrade databricks-sdk
+%pip install --quiet --upgrade databricks-sdk databricks-openai
 dbutils.library.restartPython()
 
 @@@MD
@@ -146,68 +147,51 @@ print(f"\nSelected endpoint: {ENDPOINT or '(set the endpoint_name widget above)'
 @@@MD
 ## Step 4 · Query the assistant — grounded answers with citations
 
-Query the deployed endpoint with the SDK's pre-authed **OpenAI-compatible client**.
-The catch: **Agent Bricks agents (including recent Knowledge Assistants) are served
-as `ResponsesAgent`s**, so they use the OpenAI **responses** API
-(`client.responses.create(model=ENDPOINT, input=[…])`) — *not* `chat.completions`.
-Calling `chat.completions.create` on one raises
-`TypeError: Missing required arguments … ('messages' and 'model')`.
+**Agent Bricks agents (including the Knowledge Assistant) are served as
+`ResponsesAgent`s** — they speak the OpenAI **responses** schema, i.e. they want
+`{"input": [{"role": "user", "content": "…"}]}`, **not** a `messages` field. So we
+query with the current **`databricks-openai`** client's **responses** API
+(`client.responses.create(model=ENDPOINT, input=[…])`). Two things this rules out:
+`chat.completions` (raises *"Missing required arguments ('messages' and 'model')"*)
+and the old `get_open_ai_client()` (now deprecated). The retriever pulls the relevant
+chunks from your PDFs and answers from them; the questions map to Notebook 1's docs.
 
-So `ask_ka` below **tries the responses API first**, then falls back to
-`chat.completions` (plain chat models) and finally the SDK's `serving_endpoints.query`
-— so it works whatever interface your endpoint exposes. The retriever pulls the
-relevant chunks from your PDFs and answers from them; the questions map to the
-documents from Notebook 1.
-
-> **On `input=` vs `messages=`:** `input=` is correct for the OpenAI **responses**
-> call (`client.responses.create`). It is *not* valid for the SDK's
-> `w.serving_endpoints.query` — that one takes **`messages=[ChatMessage(...)]`**.
-> Mixing them up (`query(..., input=…)`) is what produced the earlier no-`.choices` error.
+> `ask_ka` falls back to the raw SDK **`w.serving_endpoints.query(name=ENDPOINT,
+> input=…)`** (which sends the same `{"input": […]}` body) if `databricks-openai`
+> isn't installed — so it works either way.
 @@@CODE
 # Re-read the widget here so you can set it after Step 3's listing, then run this cell.
 ENDPOINT = dbutils.widgets.get("endpoint_name").strip()
 assert ENDPOINT, "Set the endpoint_name widget (Step 3) to your assistant's endpoint."
 
-def _text_from_responses(resp):
-    """Pull the answer text out of an OpenAI *responses* object (agent endpoints)."""
-    txt = getattr(resp, "output_text", None)   # convenience aggregate in recent SDKs
+def _answer_text(resp):
+    """Pull the text out of a responses result (object or dict), across shapes."""
+    txt = getattr(resp, "output_text", None)
     if txt:
         return txt
+    # Walk .output (or a dict's "output") → items → content → text.
+    output = getattr(resp, "output", None) or (resp.get("output") if isinstance(resp, dict) else None)
     parts = []
-    for item in (getattr(resp, "output", None) or []):
-        for c in (getattr(item, "content", None) or []):
+    for item in (output or []):
+        content = getattr(item, "content", None) or (item.get("content") if isinstance(item, dict) else None)
+        for c in (content or []):
             t = getattr(c, "text", None) or (c.get("text") if isinstance(c, dict) else None)
             if t:
                 parts.append(t)
     return "\n".join(parts) if parts else str(resp)
 
 def ask_ka(question, history=None):
-    """Ask the Knowledge Assistant. Returns (answer, updated_history).
+    """Ask the Knowledge Assistant (a ResponsesAgent). Returns (answer, updated_history).
 
-    Agent Bricks agents (incl. recent Knowledge Assistants) are served as
-    **ResponsesAgents** → the OpenAI *responses* API. Older/plain chat endpoints use
-    *chat.completions*. We try responses first, then chat, then the SDK query() — so
-    it works whatever interface your endpoint exposes."""
+    Uses the databricks-openai client's responses API; falls back to the raw SDK
+    query(input=...) — both send the {"input": [...]} schema the endpoint requires."""
     messages = (history or []) + [{"role": "user", "content": question}]
-    client = w.serving_endpoints.get_open_ai_client()  # pre-authed for this workspace
     try:
-        # ResponsesAgent path. `input` takes the running message list.
-        resp = client.responses.create(model=ENDPOINT, input=messages)
-        answer = _text_from_responses(resp)
+        from databricks_openai import DatabricksOpenAI
+        resp = DatabricksOpenAI().responses.create(model=ENDPOINT, input=messages)
     except Exception:
-        try:
-            # Plain chat-completions model.
-            resp = client.chat.completions.create(model=ENDPOINT, messages=messages)
-            answer = resp.choices[0].message.content
-        except Exception:
-            # SDK query() with typed ChatMessages (NOT input=...).
-            from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-            _role = {"user": ChatMessageRole.USER, "assistant": ChatMessageRole.ASSISTANT,
-                     "system": ChatMessageRole.SYSTEM}
-            resp = w.serving_endpoints.query(
-                name=ENDPOINT,
-                messages=[ChatMessage(role=_role[m["role"]], content=m["content"]) for m in messages])
-            answer = resp.choices[0].message.content
+        resp = w.serving_endpoints.query(name=ENDPOINT, input=messages)  # sends {"input": [...]}
+    answer = _answer_text(resp)
     return answer, messages + [{"role": "assistant", "content": answer}]
 
 q1 = "What is the credit limit for a Premier distributor, and what are the standard payment terms?"
@@ -226,10 +210,11 @@ a3, hist = ask_ka(follow_up, history=hist)
 print("Q:", follow_up, "\n\nA:", a3)
 
 @@@MD
-> **Other ways to call it.** `ask_ka` already handles the OpenAI-client and
-> `serving_endpoints.query` paths. You can also hit the REST endpoint directly at
-> `POST {host}/serving-endpoints/{ENDPOINT}/invocations` with a bearer token and an
-> OpenAI-style `{"messages": [...]}` body.
+> **Other ways to call it.** `ask_ka` already handles the `databricks-openai`
+> responses path and the raw `serving_endpoints.query(input=…)` fallback. You can
+> also hit the REST endpoint directly at
+> `POST {host}/serving-endpoints/{ENDPOINT}/invocations` with a bearer token and a
+> responses-style `{"input": [{"role": "user", "content": "…"}]}` body.
 
 @@@MD
 ## Step 5 · Governance, and wiring it into the app
