@@ -12,22 +12,19 @@ A minimal, production-shaped Databricks App that:
   5. Persists every turn of the conversation into a **Lakebase** (managed
      Postgres) table so the app has durable, queryable state.
 
-Identity model (hybrid on-behalf-of-user):
-  * **Genie + Knowledge Assistant run AS THE END USER** (OBO). In Databricks
-    Apps with user authorization enabled (see app.yaml), Databricks forwards the
-    signed-in user's OAuth token in the `x-forwarded-access-token` header; we
-    build a user-scoped `WorkspaceClient` from it so Unity Catalog enforces that
-    user's own permissions on the governed data/docs.
-  * **Lakebase app-state runs as the app service principal.** The conversations
-    log, action items and forecast are shared app state (not per-user governed
-    data), so they use the app SP — no per-user Postgres roles required.
+Identity model (service principal):
+  * Everything — Genie, the Knowledge Assistant, the forecast endpoint, and
+    Lakebase — runs as the **app's service principal**. Its access comes from the
+    app's attached resources (Genie space CAN_RUN, serving endpoints CAN_QUERY,
+    the Lakebase Database resource) plus the grants in Notebook 6, Step 5. Unity
+    Catalog enforces the SP's permissions. (An on-behalf-of-user variant is
+    possible, but needs the workspace to allow app user-authorization scopes;
+    this app uses the simpler SP model so it runs on locked-down workspaces too.)
 
 The same code runs two ways:
-  * **In Databricks Apps** — the SP auth + Lakebase host are injected via the
-    app's resources; the user token arrives in the request header (OBO).
-  * **Locally** — set DATABRICKS_CONFIG_PROFILE and the PG* / GENIE_SPACE_ID
-    env vars, then `streamlit run app.py`. No user token is forwarded locally,
-    so Genie/KA transparently fall back to the SP and the UI flags it.
+  * **In Databricks Apps** — the SP auth + Lakebase host are injected via the app's resources.
+  * **Locally** — set DATABRICKS_CONFIG_PROFILE and the PG* / GENIE_SPACE_ID env
+    vars, then `streamlit run app.py`.
 
 See app.yaml for the resource wiring and README.md for deploy steps.
 """
@@ -46,17 +43,6 @@ from sqlalchemy import create_engine, text
 # --------------------------------------------------------------------------
 GENIE_SPACE_ID = os.environ.get("GENIE_SPACE_ID", "")
 
-# Auth mode for Genie + Knowledge Assistant. Default is on-behalf-of-user (OBO): the
-# app calls them AS THE SIGNED-IN USER, so Unity Catalog enforces each person's
-# permissions — but that needs an admin to enable app user-authorization and allowlist
-# the `genie`/`sql`/`serving` scopes (app.yaml). On locked-down workspaces where that
-# isn't available, set USE_OBO=false in app.yaml: the app then uses its SERVICE
-# PRINCIPAL for Genie/KA too (governance becomes SP-level, and no OBO scopes needed —
-# the SP already has CAN_RUN on the space and CAN_QUERY on the KA endpoint via its
-# app resources). Genie's SQL still runs on the space's warehouse, so the SP needs
-# CAN_USE on that warehouse either way.
-USE_OBO = os.environ.get("USE_OBO", "true").strip().lower() not in ("false", "0", "no")
-
 # Lakebase: we derive the host and Postgres user from the instance itself via the
 # SDK, rather than trusting injected PG* env vars (whose values/mapping vary by
 # how the Database resource is wired). We only need the instance name and the
@@ -74,6 +60,9 @@ KA_ENDPOINT = os.environ.get("KA_ENDPOINT", "")
 # Demand forecast table in Lakebase (Notebook 4 writes Delta; Notebook 5 copies
 # it into Postgres). The Forecast tab reads it straight from here.
 FORECAST_TABLE = "app.demand_forecast"
+# Historical monthly demand (actuals) by segment — NB4 writes it to Delta, NB5 copies
+# it here — so the Forecast tab can chart actuals → forecast as one continuous trend.
+DEMAND_MONTHLY_TABLE = "app.demand_monthly"
 
 # Editable reference table (copied Delta -> Lakebase in Notebook 5). The
 # "Edit distributors" tab reads it, lets you add/edit/delete rows, and writes the
@@ -112,6 +101,38 @@ SAMPLE_DOC_QUESTIONS = [
 
 st.set_page_config(page_title="ABI Supply-Chain Assistant", page_icon="🍺", layout="wide")
 
+# --- Light polish: tighter layout, branded accents, nicer tabs/metrics/cards. -------
+# Kept intentionally conservative so it's robust across Streamlit versions.
+st.markdown(
+    """
+    <style>
+      :root { --abi-ink:#1B3139; --abi-red:#FF3621; --abi-line:#E3E9ED; }
+      .block-container { padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1180px; }
+      h1, h2, h3 { color: var(--abi-ink); letter-spacing: -0.01em; }
+      /* Tabs: roomier, with an accent underline on the active tab */
+      button[data-baseweb="tab"] { font-size: 0.98rem; font-weight: 600; padding: 0.4rem 0.2rem; }
+      div[data-baseweb="tab-highlight"], div[data-baseweb="tab-border"] { background-color: var(--abi-red); }
+      /* Metric tiles as cards */
+      div[data-testid="stMetric"] {
+        background:#F7FAFB; border:1px solid var(--abi-line); border-radius:12px;
+        padding:14px 18px;
+      }
+      /* Buttons: rounded, consistent */
+      .stButton>button { border-radius:10px; border:1px solid var(--abi-line); font-weight:600; }
+      /* Dataframes get a soft border */
+      div[data-testid="stDataFrame"] { border:1px solid var(--abi-line); border-radius:12px; }
+      /* App header banner */
+      .abi-hero {
+        background: linear-gradient(90deg, #1B3139 0%, #2A4A55 100%);
+        color:#fff; border-radius:14px; padding:18px 22px; margin-bottom:14px;
+      }
+      .abi-hero h1 { color:#fff; margin:0; font-size:1.5rem; }
+      .abi-hero p { color:#D7E2E8; margin:4px 0 0; font-size:0.92rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # --------------------------------------------------------------------------
 # Databricks / Lakebase clients (cached for the life of the server process)
@@ -125,39 +146,9 @@ def get_workspace_client() -> WorkspaceClient:
     return WorkspaceClient()
 
 
-def user_access_token() -> str | None:
-    """The end user's forwarded OAuth token (OBO), or None.
-
-    Databricks Apps injects it as the `x-forwarded-access-token` header when
-    user authorization is enabled (see app.yaml) and a real user is driving the
-    request. Absent locally and for health checks. Never log this value.
-    """
-    try:
-        return st.context.headers.get("x-forwarded-access-token") if hasattr(st, "context") else None
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def get_user_client() -> tuple[WorkspaceClient, bool]:
-    """WorkspaceClient for governed, per-user calls (Genie, Knowledge Assistant).
-
-    Returns (client, is_obo). When the forwarded user token is present we build a
-    client from it so Unity Catalog enforces the *end user's* permissions (OBO).
-    When it's absent (local dev, health checks) we fall back to the app service
-    principal and flag it, so the UI can make clear the request is NOT running as
-    the end user.
-
-    Deliberately NOT cached with st.cache_resource: the token is per-user and
-    rotates ~hourly, so a process-wide cache would hand one user's identity to
-    others. WorkspaceClient construction does no network I/O, so per-call is fine.
-    """
-    if not USE_OBO:
-        # SP-only mode: run Genie/KA as the app service principal (no OBO scopes needed).
-        return get_workspace_client(), False
-    token = user_access_token()
-    if token:
-        return WorkspaceClient(token=token, auth_type="pat"), True
-    return get_workspace_client(), False
+# Genie, the Knowledge Assistant, the forecast endpoint and Lakebase all run as the
+# app's service principal (see the module docstring), so there's a single client.
+get_governed_client = get_workspace_client
 
 
 @st.cache_resource
@@ -238,8 +229,8 @@ def log_conversation(session_id, user_email, question, answer_text, generated_sq
 def ask_genie(w: WorkspaceClient, question: str, conversation_id: str | None):
     """Send `question` to the Genie space and normalize the response.
 
-    `w` is the caller-supplied client — the user-scoped (OBO) client in
-    Databricks Apps so Genie runs the query under the end user's UC permissions.
+    `w` is the caller-supplied client — the app's service-principal client, so
+    Genie runs the query under the SP's Unity Catalog permissions.
 
     Returns a dict with: answer_text, generated_sql, result_df, conversation_id,
     message_id. Starts a new conversation on the first turn, then continues the
@@ -329,7 +320,7 @@ def _ka_answer_text(resp) -> str:
 def ask_ka(w: WorkspaceClient, question: str, history: list | None = None):
     """Ask the Agent Bricks Knowledge Assistant. Returns (answer, updated_history).
 
-    `w` is the caller-supplied client (SP or, in OBO mode, the user-scoped client).
+    `w` is the app's service-principal client (which has CAN_QUERY on the endpoint).
     Agent Bricks agents are served as ResponsesAgents, so we use the OpenAI
     **responses** API; we fall back to the raw SDK query(input=...) (no openai package
     needed) and finally chat.completions — so it works across endpoint/SDK variants.
@@ -366,6 +357,20 @@ def fetch_forecast():
             )
     except Exception as e:  # noqa: BLE001 - table may not be loaded yet
         print(f"forecast fetch failed: {e}")
+        return None
+
+
+def fetch_demand_history():
+    """Historical monthly actuals by segment (app.demand_monthly). None if not loaded."""
+    engine = get_engine()
+    if engine is None:
+        return None
+    try:
+        with engine.connect() as c:
+            return pd.read_sql(
+                f"SELECT segment, month, cases FROM {DEMAND_MONTHLY_TABLE} "
+                "ORDER BY month, segment", c)
+    except Exception:  # noqa: BLE001 - table may not exist (older Notebook 4/5)
         return None
 
 
@@ -472,10 +477,7 @@ def render_chat_tab(user_email):
     with st.chat_message("user"):
         st.markdown(question)
     with st.chat_message("assistant"):
-        w, is_obo = get_user_client()
-        if not is_obo:
-            st.caption("⚠️ No forwarded user token — running as the app service "
-                       "principal, not on-behalf-of-user.")
+        w = get_governed_client()
         with st.spinner("Asking Genie…"):
             result = ask_genie(w, question, st.session_state.conversation_id)
         st.session_state.conversation_id = result["conversation_id"]
@@ -598,13 +600,20 @@ def render_docs_tab(user_email):
         with st.chat_message("assistant"):
             st.markdown(turn["a"])
 
-    if not st.session_state.docs_history:
-        st.caption("Try a sample question:")
+    # Sample questions stay available mid-conversation (in an expander once started).
+    def _doc_sample_buttons():
         cols = st.columns(2)
         for i, q in enumerate(SAMPLE_DOC_QUESTIONS):
             if cols[i % 2].button(q, key=f"docq_{i}", use_container_width=True):
                 st.session_state.pending_docq = q
                 st.rerun()
+
+    if not st.session_state.docs_history:
+        st.caption("Try a sample question:")
+        _doc_sample_buttons()
+    else:
+        with st.expander("💡 Sample questions"):
+            _doc_sample_buttons()
 
     typed = st.chat_input("Ask about onboarding, freight, quality, fulfillment or returns…")
     question = typed or st.session_state.pop("pending_docq", None)
@@ -614,10 +623,7 @@ def render_docs_tab(user_email):
     with st.chat_message("user"):
         st.markdown(question)
     with st.chat_message("assistant"):
-        w, is_obo = get_user_client()
-        if not is_obo:
-            st.caption("⚠️ No forwarded user token — running as the app service "
-                       "principal, not on-behalf-of-user.")
+        w = get_governed_client()
         with st.spinner("Asking the Knowledge Assistant…"):
             try:
                 answer, _ = ask_ka(w, question)
@@ -688,48 +694,109 @@ def fetch_scenarios():
 
 
 def render_forecast_tab(user_email):
-    st.subheader("Demand forecast by segment")
+    st.subheader("📈 Demand forecast")
     st.caption(
-        "Monthly case-volume forecast from the **MLflow model** in Notebook 4, written "
-        "to Delta and loaded into Lakebase (`app.demand_forecast`, Notebook 5). Below, "
-        "run **live what-if inference** against the model's **serving endpoint** and save "
-        "each scenario to Lakebase."
+        "Monthly **case volume** per commercial segment. Solid line = historical actuals; "
+        "the dashed continuation = the **MLflow model's forecast** (Notebook 4), served from "
+        "Lakebase. Pick a segment to see its trend, then try **live what-if inference** below."
     )
     if get_engine() is None:
         st.warning("Lakebase not configured — set LAKEBASE_INSTANCE in app.yaml.")
         return
-    df = fetch_forecast()
-    if df is not None and not df.empty:
-        df["month"] = pd.to_datetime(df["month"])
-        df["forecast_cases"] = pd.to_numeric(df["forecast_cases"])
-        pivot = (df.pivot_table(index="month", columns="segment",
-                                values="forecast_cases", aggfunc="sum").sort_index())
-        st.line_chart(pivot)
-        seg_options = sorted(df["segment"].unique().tolist())
-    else:
-        st.info("No stored forecast yet (run Notebooks 4 + 5). You can still run live inference below.")
-        seg_options = SEGMENTS
+
+    hist = fetch_demand_history()
+    fc = fetch_forecast()
+
+    # Segments available from whatever data we have.
+    seg_set = set()
+    for d, col in ((hist, "cases"), (fc, "forecast_cases")):
+        if d is not None and not d.empty:
+            seg_set.update(d["segment"].unique().tolist())
+    seg_options = sorted(seg_set) or SEGMENTS
+
+    if fc is None or fc.empty:
+        st.info("No stored forecast yet — run Notebooks 4 + 5. You can still run live inference below.")
+
+    # ---- Actuals → forecast chart for one segment (clear, not 5 overlapping lines) ----
+    if (hist is not None and not hist.empty) or (fc is not None and not fc.empty):
+        seg = st.selectbox("Segment", seg_options, key="fc_segment")
+
+        frames = []
+        if hist is not None and not hist.empty:
+            h = hist[hist["segment"] == seg][["month", "cases"]].copy()
+            h["month"] = pd.to_datetime(h["month"])
+            h = h.rename(columns={"cases": "Actual cases"}).set_index("month")
+            frames.append(h)
+        if fc is not None and not fc.empty:
+            f = fc[fc["segment"] == seg][["month", "forecast_cases"]].copy()
+            f["month"] = pd.to_datetime(f["month"])
+            f = f.rename(columns={"forecast_cases": "Forecast cases"}).set_index("month")
+            frames.append(f)
+
+        chart_df = pd.concat(frames, axis=1).sort_index() if frames else pd.DataFrame()
+        # Connect the two lines: seed the forecast at the last actual point.
+        if {"Actual cases", "Forecast cases"} <= set(chart_df.columns) and chart_df["Actual cases"].notna().any():
+            last_actual_month = chart_df["Actual cases"].last_valid_index()
+            chart_df.loc[last_actual_month, "Forecast cases"] = chart_df.loc[last_actual_month, "Actual cases"]
+
+        st.line_chart(chart_df, height=320)
+
+        # A couple of at-a-glance numbers for the selected segment.
+        if not chart_df.empty:
+            k1, k2, k3 = st.columns(3)
+            if "Actual cases" in chart_df and chart_df["Actual cases"].notna().any():
+                la = chart_df["Actual cases"].dropna()
+                k1.metric("Latest actual (cases/mo)", f"{la.iloc[-1]:,.0f}")
+            if "Forecast cases" in chart_df and chart_df["Forecast cases"].notna().any():
+                fcv = chart_df["Forecast cases"].dropna()
+                k2.metric("Next forecast (cases/mo)", f"{fcv.iloc[-1]:,.0f}")
+                if "Actual cases" in chart_df and chart_df["Actual cases"].notna().any():
+                    base = chart_df["Actual cases"].dropna().iloc[-1]
+                    if base:
+                        k3.metric("Forecast vs latest actual", f"{(fcv.iloc[-1] / base - 1) * 100:+.1f}%")
+
+        if hist is None or hist.empty:
+            st.caption("💡 Only the forecast is loaded. Re-run Notebooks 4 + 5 to also load "
+                       "`app.demand_monthly` (actuals) and see the full history → forecast trend.")
 
     # ---- Live what-if inference -----------------------------------------
     st.divider()
     st.markdown("#### 🔮 Live what-if inference")
+    st.caption(
+        f"Ask the model *“given the last few months, what's next month?”* The app sends typed "
+        f"features to the **`{FORECAST_ENDPOINT or '(not set)'}`** serving endpoint and saves each "
+        f"scenario to Lakebase (`app.forecast_scenarios`)."
+    )
+    with st.expander("ℹ️ What do these inputs mean?"):
+        st.markdown(
+            "The model predicts **next month's case volume** for a segment from a few features:\n\n"
+            "- **`lag_1`, `lag_2`, `lag_3`** — actual cases **1, 2, and 3 months ago**. These are the "
+            "model's main signal (recent momentum): `lag_1` is last month, `lag_3` is three months back.\n"
+            "- **Target month / year** — the month you're predicting *for* (drives seasonality).\n\n"
+            "Two more features are **computed for you**, so you don't enter them:\n"
+            "- **`roll_3`** — the 3-month rolling average `(lag_1 + lag_2 + lag_3) / 3` (smooths noise).\n"
+            "- **`trend`** — months elapsed since the model's base year, i.e. a steady upward index for "
+            "long-run growth.\n\n"
+            "Tip: to sanity-check, enter three recent months from the chart above for the same segment — "
+            "the prediction should land near the trend."
+        )
     if not FORECAST_ENDPOINT:
         st.warning("Set `FORECAST_ENDPOINT` in app.yaml to the demand-forecast serving endpoint.")
     else:
-        st.caption(
-            f"Enter a segment's **last three months** of cases and a target month. The app "
-            f"sends those features to the **`{FORECAST_ENDPOINT}`** serving endpoint and shows "
-            f"the model's predicted next-month volume — then saves the scenario to Lakebase."
-        )
         with st.form("whatif"):
             c1, c2, c3 = st.columns(3)
-            segment = c1.selectbox("Segment", seg_options)
-            target_month = c2.number_input("Target month (1–12)", 1, 12, 1)
+            segment = c1.selectbox("Segment", seg_options, key="whatif_segment")
+            target_month = c2.number_input("Target month (1–12)", 1, 12, 1,
+                                           help="The month you're forecasting for (captures seasonality).")
             target_year = c3.number_input("Target year", 2020, 2035, dt.date.today().year)
             c4, c5, c6 = st.columns(3)
-            lag_1 = c4.number_input("Cases 1 month ago (lag_1)", min_value=0.0, value=10000.0, step=500.0)
-            lag_2 = c5.number_input("Cases 2 months ago (lag_2)", min_value=0.0, value=10000.0, step=500.0)
-            lag_3 = c6.number_input("Cases 3 months ago (lag_3)", min_value=0.0, value=10000.0, step=500.0)
+            lag_1 = c4.number_input("Cases last month (lag_1)", min_value=0.0, value=10000.0, step=500.0,
+                                    help="Actual cases 1 month before the target month.")
+            lag_2 = c5.number_input("Cases 2 months ago (lag_2)", min_value=0.0, value=10000.0, step=500.0,
+                                    help="Actual cases 2 months before the target month.")
+            lag_3 = c6.number_input("Cases 3 months ago (lag_3)", min_value=0.0, value=10000.0, step=500.0,
+                                    help="Actual cases 3 months before the target month.")
+            st.caption("`roll_3` (3-month average) and `trend` (growth index) are computed automatically.")
             submitted = st.form_submit_button("🔮 Predict & save", type="primary")
 
         if submitted:
@@ -738,8 +805,13 @@ def render_forecast_tab(user_email):
             if err:
                 st.error(f"Inference failed: {err}")
             else:
-                st.metric(f"Predicted cases · {segment} · {int(target_year)}-{int(target_month):02d}",
-                          f"{out['prediction']:,.0f}")
+                roll_3 = (lag_1 + lag_2 + lag_3) / 3.0
+                m1, m2 = st.columns([1, 2])
+                m1.metric(f"Predicted cases · {int(target_year)}-{int(target_month):02d}",
+                          f"{out['prediction']:,.0f}",
+                          delta=f"{(out['prediction'] / roll_3 - 1) * 100:+.1f}% vs 3-mo avg" if roll_3 else None)
+                m2.caption(f"Segment **{segment}** · inputs lag_1={lag_1:,.0f}, lag_2={lag_2:,.0f}, "
+                           f"lag_3={lag_3:,.0f} → roll_3={roll_3:,.0f}, trend={out['features']['trend']}.")
                 ok, serr = save_scenario(user_email, segment, out["features"], out["prediction"])
                 st.caption("✔️ Scenario saved to Lakebase" if ok else f"⚠️ Not saved: {serr}")
 
@@ -892,29 +964,42 @@ def main():
 
     user_email = current_user_email(w)
 
+    def _status(ok: bool) -> str:
+        return "🟢 connected" if ok else "⚪ not set"
+
     with st.sidebar:
-        st.header("🍺 ABI Supply-Chain Assistant")
-        st.caption("Genie for data, a Knowledge Assistant for policy docs, a demand "
-                   "forecast, and a Lakebase-backed review queue.")
+        st.markdown("### 🍺 ABI Supply-Chain Assistant")
+        st.caption("Genie for data · Knowledge Assistant for docs · demand forecast · "
+                   "a Lakebase-backed review queue.")
         st.divider()
-        st.write("**Genie space:**", GENIE_SPACE_ID or "_not set_")
-        st.write("**Knowledge Assistant:**", KA_ENDPOINT or "_not set_")
+        st.markdown("**Connections**")
+        st.write("🧞 Genie space —", _status(bool(GENIE_SPACE_ID)))
+        st.write("📄 Knowledge Assistant —", _status(bool(KA_ENDPOINT)))
+        st.write("📈 Forecast endpoint —", _status(bool(FORECAST_ENDPOINT)))
+        st.write("🐘 Lakebase —", _status(get_engine() is not None))
+        st.caption("All services run as the app **service principal**.")
+        st.divider()
         st.write("**User:**", user_email)
-        obo_active = user_access_token() is not None
-        st.write("**Genie/KA auth:**",
-                 "on-behalf-of user (OBO)" if obo_active else "service principal")
-        st.write("**Lakebase:**", "connected" if get_engine() is not None else "not configured")
-        st.write("**Session:**", st.session_state.session_id[:8])
-        if st.button("New conversation"):
+        st.write("**Session:**", f"`{st.session_state.session_id[:8]}`")
+        if st.button("🔄 New conversation", use_container_width=True):
             st.session_state.conversation_id = None
             st.session_state.history = []
             st.session_state.docs_history = []
             st.session_state.session_id = str(uuid.uuid4())
             st.rerun()
-        st.divider()
         st.caption("Ask in plain English, or tap a sample question to get started.")
 
-    st.title("🍺 ABI Supply-Chain Assistant")
+    st.markdown(
+        """
+        <div class="abi-hero">
+          <h1>🍺 ABI Supply-Chain Assistant</h1>
+          <p>Ask your beverage supply-chain data (Genie) and policies (Knowledge Assistant),
+             explore the demand forecast, and manage a Lakebase-backed review queue —
+             one governed Databricks App.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     tab_chat, tab_docs, tab_forecast, tab_edit, tab_actions = st.tabs(
         ["💬 Ask Genie", "📄 Ask the docs", "📈 Forecast", "✏️ Edit distributors", "📌 Action items"]

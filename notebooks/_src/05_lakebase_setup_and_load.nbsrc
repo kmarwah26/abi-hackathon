@@ -22,8 +22,9 @@ conversation log to Lakebase.
 The `app` schema holds two kinds of table, grouped by **who fills them**:
 
 - **Copied from Delta** — reference data and model output the app only *reads*
-  (`products`, `distributors`, `demand_forecast`). We snapshot them from the Delta
-  tables into Postgres with a simple `to_sql` copy.
+  (`products`, `distributors`, `demand_forecast`, and `demand_monthly` — the
+  historical actuals the Forecast tab charts under the forecast). We snapshot them
+  from the Delta tables into Postgres with a simple `to_sql` copy.
 - **Written by the app at runtime** — the transactional state Lakebase exists for:
   `conversations` (every Genie turn), `action_items` (a review queue), and
   `forecast_scenarios` (what-if predictions). The app `INSERT`/`UPDATE`/`DELETE`s these.
@@ -37,8 +38,8 @@ tab), which is exactly the kind of low-latency read/write Lakebase is built for.
 1. Create a **Lakebase instance** (provisioned tier)
 2. Create a logical database + `app` schema
 3. Create the tables — the app's **write-back** tables plus the reference tables
-4. **Copy** reference data (`products`, `distributors`) and the **`demand_forecast`**
-   table (Notebook 4) from Delta → Lakebase with `to_sql`
+4. **Copy** reference data (`products`, `distributors`), the **`demand_forecast`**
+   and the **`demand_monthly`** actuals (Notebook 4) from Delta → Lakebase with `to_sql`
 
 > **Prerequisites:** an **FE-VM serverless workspace** (Lakebase needs serverless).
 > Notebook 1 completed (`products`, `distributors`); Notebook 4 completed if you want
@@ -321,12 +322,14 @@ print("Copying reference data…")
 copy_table("products", "products")
 copy_table("distributors", "distributors")
 
-# The demand forecast from Notebook 4 (the app charts this). Skip gracefully if
-# you haven't run Notebook 4 yet.
-try:
-    copy_table("demand_forecast", "demand_forecast")
-except Exception as e:
-    print(f"  (skipped demand_forecast — run Notebook 4 first: {e})")
+# The demand forecast + the historical monthly actuals from Notebook 4 (the app's
+# Forecast tab charts actuals → forecast as one line). Skip gracefully if you
+# haven't run Notebook 4 yet.
+for _delta, _pg in [("demand_forecast", "demand_forecast"), ("demand_monthly", "demand_monthly")]:
+    try:
+        copy_table(_delta, _pg)
+    except Exception as e:
+        print(f"  (skipped {_delta} — run Notebook 4 first: {e})")
 print("Done.")
 
 @@@MD
@@ -334,7 +337,7 @@ print("Done.")
 @@@CODE
 with app_engine.connect() as c:
     for t in ["products", "distributors", "conversations", "action_items",
-              "forecast_scenarios", "demand_forecast"]:
+              "forecast_scenarios", "demand_forecast", "demand_monthly"]:
         try:
             n = c.execute(text(f"SELECT COUNT(*) FROM app.{t}")).scalar()
             print(f"app.{t:18s} {n:>6} rows")
@@ -387,8 +390,8 @@ output); keep native Postgres tables for anything the app writes.**
 
 You provisioned a **Lakebase** instance, created the `abi_app` database with an
 `app` schema, and loaded reference data (`products`, `distributors`), the
-**`demand_forecast`**, and the write-back tables (`conversations`, `action_items`,
-`forecast_scenarios`).
+**`demand_forecast`** + **`demand_monthly`** actuals, and the write-back tables
+(`conversations`, `action_items`, `forecast_scenarios`).
 
 **Key ideas**
 - Lakebase = **managed Postgres** for low-latency, transactional **app state**.

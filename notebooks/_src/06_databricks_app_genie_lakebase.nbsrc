@@ -19,11 +19,11 @@ four tabs that
 - **Connected components:** a Databricks App can call a SQL Warehouse, Model
   Serving, **Agent Bricks**, **Genie**, and the Jobs API. Ours uses **Genie**, a
   **Knowledge Assistant** serving endpoint, and **Lakebase**.
-- **Hybrid on-behalf-of-user (OBO):** the app calls **Genie** and the **Knowledge
-  Assistant as the signed-in user**, so Unity Catalog enforces *their* permissions
-  (`user_authorization` scopes in `app.yaml` + the forwarded `x-forwarded-access-token`
-  header). **Lakebase** app-state stays on the app's **service principal**, since
-  it's shared state, not per-user data. See the OBO diagram below.
+- **Runs as a service principal (SP):** the app calls Genie, the Knowledge
+  Assistant, the forecast endpoint, and Lakebase all as its **own service
+  principal** — no on-behalf-of-user token exchange. That keeps it deployable on
+  locked-down workspaces, and means governance is SP-level: the SP is granted access
+  to everything the app touches (Step 5).
 - Config lives in **`app.yaml`**; resources (Lakebase DB, Genie space, serving
   endpoint) are attached at create time and injected as env vars / grants.
 
@@ -37,31 +37,22 @@ the app charts).
 
 @@@IMG:request_flow
 
-### Who the app runs as (hybrid OBO)
+### Who the app runs as (service principal)
 
-Not every call uses the same identity. **Genie** and the **Knowledge Assistant**
-run **on behalf of the signed-in user** — Databricks forwards the user's token in
-the `x-forwarded-access-token` header and the app builds a user-scoped client from
-it, so Unity Catalog enforces each person's own permissions. **Lakebase** app-state
-(action items, conversation logs, the forecast) runs as the app's **service
-principal**, because that state is shared across everyone, not per-user.
+Every call uses **one identity: the app's service principal (SP)**. Databricks
+auto-authenticates `WorkspaceClient()` inside the app as that SP, so Genie, the
+Knowledge Assistant, the forecast endpoint, and Lakebase are all called as the SP —
+there's no on-behalf-of-user (OBO) token exchange to configure. That's what makes
+this deployable on **locked-down workspaces**, where an admin often *can't* enable
+app user-authorization or allowlist the OBO `genie`/`sql`/`serving` scopes (OBO
+would otherwise fail at runtime with `403 … Invalid scope, required scopes: genie`).
 
-@@@IMG:app_auth_obo
-
-> For OBO to take effect, an admin must **enable user authorization** for the app,
-> and each **end user** needs `CAN_RUN` on the Genie space, `CAN_QUERY` on the KA
-> endpoint, and `SELECT` on the underlying tables. Running locally there's no
-> forwarded token, so the app falls back to the service principal and flags it.
-
-> ### 🔒 Locked-down workspace? Use SP-only auth
-> If an admin **can't enable app user-authorization / allowlist the `genie` scope**,
-> OBO fails at runtime with `403 … Invalid scope, required scopes: genie`. Set the
-> **`use_obo` widget to `false`** (Step 0) — the app then calls Genie + the Knowledge
-> Assistant as its **service principal** instead (no OBO scopes needed). The SP already
-> has `CAN_RUN` on the space and `CAN_QUERY` on the KA endpoint (its app resources);
-> it just also needs `CAN_USE` on the Genie space's **warehouse**. Trade-off:
-> governance is SP-level, not per-user — fine for a workshop, switch back to OBO
-> (`use_obo=true`) for production.
+The trade-off: governance is **SP-level, not per-user** — everyone using the app
+sees what the SP is allowed to see. That's fine for a workshop; for production
+per-user governance you'd layer OBO back on. Because it all runs as the SP, **Step 5
+grants that SP everything the app touches**: `CAN_RUN` on the Genie space, `CAN_USE`
+on its warehouse, `CAN_QUERY` on the KA + forecast endpoints, `SELECT` on the UC
+tables, and Postgres privileges on the Lakebase `app.*` tables.
 
 > **Prerequisites:** Notebooks 1–5 done (data, Genie, Knowledge Assistant,
 > forecast, Lakebase). The app source lives in the sibling **`../app/`** folder
@@ -91,7 +82,6 @@ dbutils.widgets.text("forecast_endpoint", "", "Forecast serving endpoint (NB4; b
 dbutils.widgets.text("forecast_base_year", "2023", "Forecast base year (from Notebook 4)")
 dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance base (username appended)")
 dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")
-dbutils.widgets.dropdown("use_obo", "true", ["true", "false"], "Genie/KA auth: true=on-behalf-of-user, false=SP-only")
 @@@CODE
 # Read the widgets and derive the per-user names (deterministic from your identity).
 import re
@@ -110,7 +100,6 @@ FORECAST_BASE_YEAR = dbutils.widgets.get("forecast_base_year").strip()
 INSTANCE = f"{dbutils.widgets.get('lakebase_instance').strip()}-{_dslug}"  # per-user instance (matches NB5)
 APP_DB = f"{dbutils.widgets.get('app_db').strip()}_{_slug}"   # per-user logical DB (matches NB5)
 APP_NAME = f"abi-genie-app-{_dslug}"                          # per-user app name
-USE_OBO = dbutils.widgets.get("use_obo").strip()             # "true"=OBO (per-user), "false"=SP-only
 
 print("Resource IDs for this run:")
 print(f"  catalog.schema     : {CATALOG}.{SCHEMA}")
@@ -119,7 +108,7 @@ print(f"  KA_ENDPOINT        : {KA_ENDPOINT or '(blank — docs tab hidden)'}")
 print(f"  FORECAST_ENDPOINT  : {FORECAST_ENDPOINT}")
 print(f"  PGAPPDB / instance : {APP_DB} / {INSTANCE}")
 print(f"  APP_NAME           : {APP_NAME}")
-print(f"  USE_OBO            : {USE_OBO}   ({'as signed-in user' if USE_OBO != 'false' else 'SP-only — no OBO scopes needed'})")
+print(f"  Auth               : service-principal only (no OBO scopes needed)")
 
 @@@MD
 ## Step 1 · The integration code, explained
@@ -142,16 +131,17 @@ def ask_genie(question, conversation_id=None):
     ...
 ```
 
-**B · Ask the Knowledge Assistant (Notebook 3).** The assistant is a **serving
-endpoint**; query it with the SDK's OpenAI-compatible client — no extra auth to
-wire up in the App:
+**B · Ask the Knowledge Assistant (Notebook 3).** The assistant is an Agent Bricks
+**`ResponsesAgent`** served behind an endpoint, so query it with the SDK's
+OpenAI-compatible client via the **Responses API** (not `chat.completions`) — no
+extra auth to wire up in the App:
 ```python
 def ask_ka(question):
     client = w.serving_endpoints.get_open_ai_client()   # pre-authed as the SP
-    resp = client.chat.completions.create(
-        model=KA_ENDPOINT, messages=[{"role": "user", "content": question}])
-    return resp.choices[0].message.content   # grounded, cited answer from the docs
+    resp = client.responses.create(model=KA_ENDPOINT, input=question)
+    return _answer_text(resp)   # grounded, cited answer parsed from the response
 ```
+(`get_open_ai_client()` needs `databricks-sdk[openai]` — see `../app/requirements.txt`.)
 
 **C · Show the forecast (Notebook 4).** No recompute at request time — the app
 just reads the forecast Lakebase copied from Delta and charts it:
@@ -235,7 +225,7 @@ APP_YAML = f"/Workspace{APP_DIR}/app.yaml"              # FUSE path to the sourc
 _vals = {
     "GENIE_SPACE_ID": GENIE_SPACE_ID, "KA_ENDPOINT": KA_ENDPOINT,
     "FORECAST_ENDPOINT": FORECAST_ENDPOINT, "FORECAST_BASE_YEAR": FORECAST_BASE_YEAR,
-    "PGAPPDB": APP_DB, "LAKEBASE_INSTANCE": INSTANCE, "USE_OBO": USE_OBO,
+    "PGAPPDB": APP_DB, "LAKEBASE_INSTANCE": INSTANCE,
 }
 
 def _patch(txt):

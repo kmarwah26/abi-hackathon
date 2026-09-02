@@ -18,22 +18,6 @@ env:
     value: "01f1a48a4a35108ebbe9c940cdc11a8a"
 
   # ----------------------------------------------------------------------
-  # Auth mode for Genie + Knowledge Assistant.
-  #   "true"  (default) → on-behalf-of-user (OBO): call them AS THE SIGNED-IN USER,
-  #                       so Unity Catalog enforces each person's own permissions.
-  #                       Requires an admin to enable app user-authorization and
-  #                       allowlist the `genie`/`sql`/`serving` scopes (see below).
-  #   "false"          → SP-only: call them as the app's SERVICE PRINCIPAL. No OBO
-  #                       scopes needed (use this on locked-down workspaces where an
-  #                       admin can't enable OBO). Governance is then SP-level, and
-  #                       the SP needs CAN_RUN on the Genie space + CAN_QUERY on the
-  #                       KA endpoint (both attached as app resources) + CAN_USE on
-  #                       the Genie space's warehouse.
-  # ----------------------------------------------------------------------
-  - name: USE_OBO
-    value: "true"
-
-  # ----------------------------------------------------------------------
   # Agent Bricks Knowledge Assistant serving-endpoint name (from Notebook 3).
   # Answers policy / how-to questions from the knowledge_base Volume docs.
   # Leave blank to disable the "Ask the docs" tab.
@@ -69,32 +53,15 @@ env:
     value: "abi-hackathon-lakebase"
 
 # --------------------------------------------------------------------------
-# On-behalf-of-user (OBO) authorization.
+# Authentication model: SERVICE-PRINCIPAL ONLY.
 #
-# With this block present, Databricks forwards the signed-in user's OAuth token
-# to the app in the `x-forwarded-access-token` header. app.py uses it to call
-# **Genie** and the **Knowledge Assistant** AS THAT USER, so Unity Catalog
-# enforces each user's own permissions (per-user governance) instead of the
-# app service principal's. Lakebase app-state (conversations log, action items,
-# forecast) still uses the service principal — it's shared app state, not
-# per-user governed data (see app.py get_user_client / get_workspace_client).
-#
-# Prerequisites (otherwise the OBO calls fail, correctly, with "permission
-# denied" rather than silently showing SP-level data):
-#   * A workspace/account admin must ENABLE user authorization for apps and
-#     allow these scopes (allowedAppsUserApiScopes).
-#   * Each end user needs CAN_RUN on the Genie space, CAN_QUERY on the KA
-#     serving endpoint, and UC SELECT on the underlying curated tables.
-# If a scope turns out to be too narrow at runtime, the catch-all `all-apis`
-# works but grants the app broad power on the user's behalf — prefer the
-# least-privilege list below.
+# This app calls Genie, the Knowledge Assistant, the forecast endpoint, and
+# Lakebase entirely as the app's **service principal** (SP) — there is no
+# on-behalf-of-user (OBO) token exchange. That keeps it deployable on
+# locked-down workspaces where an admin can't enable app user-authorization or
+# allowlist OBO scopes. Governance is therefore SP-level: the SP itself needs
+# access to everything the app touches (see the resource grants below).
 # --------------------------------------------------------------------------
-user_authorization:
-  scopes:
-    - genie                       # call the Genie Conversation API as the user
-    - sql                         # run Genie's generated SQL / fetch results as the user
-    - serving.serving-endpoints   # query the Knowledge Assistant as the user
-    - iam.current-user:read       # resolve the user's identity
 
 # --------------------------------------------------------------------------
 # Resources (attached at create time via `apps create --json`, or in the app
@@ -105,6 +72,6 @@ user_authorization:
 #   * Serving endpoint -> your Knowledge Assistant endpoint, CAN_QUERY
 #                         (lets the SP call the assistant for the "Ask the docs" tab)
 # The app SP also needs SELECT on the curated UC tables and INSERT on
-# app.conversations, plus SELECT on app.demand_forecast (granted in Notebook 7,
+# app.conversations, plus SELECT on app.demand_forecast (granted in Notebook 6,
 # Step 5).
 # --------------------------------------------------------------------------

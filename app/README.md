@@ -81,23 +81,22 @@ Then attach resources (at create time via `apps create --json`, or in the UI:
 Redeploy after attaching resources so the new env vars are picked up. View logs
 at `<app-url>/logz`. See **Notebook 6** for the full scripted create + grant flow.
 
-## Authorization (on-behalf-of user)
+## Authorization (service principal)
 
-Genie and the Knowledge Assistant run **on behalf of the signed-in user** (OBO):
-`app.yaml` declares `user_authorization` scopes, so Databricks forwards the
-user's OAuth token (`x-forwarded-access-token`) and the app calls those services
-as that user — Unity Catalog enforces each person's own permissions. Lakebase
-app-state (conversations log, action items, forecast) still uses the app service
-principal, since it's shared app state rather than per-user governed data.
+Everything — Genie, the Knowledge Assistant, the forecast endpoint, and Lakebase —
+runs as the **app's service principal (SP)**. There is no on-behalf-of-user (OBO)
+token exchange, which keeps the app deployable on **locked-down workspaces** where
+an admin can't enable app user-authorization or allowlist OBO scopes.
 
-For OBO to work:
+Because it all runs as the SP, that SP is granted everything the app touches
+(scripted in **Notebook 6, Step 5**):
 
-- A workspace/account **admin must enable user authorization** for apps and
-  allow the scopes in `app.yaml` (`allowedAppsUserApiScopes`).
-- Each **end user** (not just the app SP) needs **Can run** on the Genie space,
-  **Can query** on the KA endpoint, and `SELECT` on the underlying UC tables.
-  Without these the OBO calls fail with a permission error — that's OBO working,
-  not a bug; the SP grants above no longer cover the user's own queries.
+- **Can run** on the Genie space and **Can use** on the space's SQL warehouse.
+- **Can query** on the Knowledge Assistant and demand-forecast serving endpoints.
+- `SELECT` on the curated Unity Catalog tables (Genie runs its SQL as the SP).
+- Postgres privileges on the Lakebase `app.*` tables (the Database resource
+  provisions the SP's role; Step 5b grants the table privileges).
 
-Running locally there's no forwarded token, so Genie/KA fall back to the service
-principal and the app flags this in the sidebar (**Genie/KA auth**).
+The trade-off is that governance is **SP-level, not per-user** — everyone using
+the app sees what the SP can see. That's appropriate for a workshop; for per-user
+governance in production you'd layer OBO back on (an admin-enabled feature).

@@ -297,6 +297,16 @@ display(forecast.sort_values(["month", "segment"]))
       .saveAsTable(f"{FQ}.demand_forecast"))
 print(f"Wrote {FQ}.demand_forecast ({len(forecast)} rows) — Notebook 5 loads it into Lakebase.")
 
+# Also persist the HISTORICAL monthly series (the Step-1 `demand` frame) as Delta.
+# The app's Forecast tab charts this as the solid "actuals" line and connects the
+# dashed forecast onto its end — so history + forecast read as one continuous trend.
+hist_out = demand.copy()
+hist_out["month"] = pd.to_datetime(hist_out["month"]).dt.date   # store as DATE, like the forecast
+(spark.createDataFrame(hist_out[["segment", "month", "cases"]])
+      .write.format("delta").mode("overwrite").option("overwriteSchema", "true")
+      .saveAsTable(f"{FQ}.demand_monthly"))
+print(f"Wrote {FQ}.demand_monthly ({len(hist_out)} rows) — the app charts this as actuals.")
+
 @@@MD
 ## Step 6 · Register a serving copy + create a Model Serving endpoint
 
