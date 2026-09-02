@@ -272,17 +272,35 @@ from databricks.sdk.service.apps import (
 
 assert GENIE_SPACE_ID, "Set the genie_space_id widget in Step 0 first."
 
+def _endpoint_exists(nm):
+    try:
+        w.serving_endpoints.get(name=nm)
+        return True
+    except Exception:
+        return False
+
 resources = [
     AppResource(name="lakebase", database=AppResourceDatabase(
         instance_name=INSTANCE, database_name=APP_DB, permission=_DBP.CAN_CONNECT_AND_CREATE)),
     AppResource(name="genie", genie_space=AppResourceGenieSpace(
         name="genie", space_id=GENIE_SPACE_ID, permission=_GSP.CAN_RUN)),
-    AppResource(name="forecast_endpoint", serving_endpoint=AppResourceServingEndpoint(
-        name=FORECAST_ENDPOINT, permission=_SEP.CAN_QUERY)),
 ]
-if KA_ENDPOINT:  # only attach the KA endpoint if you created one (Notebook 3)
+# Only attach a serving-endpoint resource if the endpoint actually exists — otherwise
+# the whole create fails with "Endpoint ... does not exist". A wrong/blank widget or an
+# un-run Notebook 4/3 just means we skip it (and say so), rather than erroring.
+if _endpoint_exists(FORECAST_ENDPOINT):
+    resources.append(AppResource(name="forecast_endpoint", serving_endpoint=AppResourceServingEndpoint(
+        name=FORECAST_ENDPOINT, permission=_SEP.CAN_QUERY)))
+else:
+    print(f"⚠️  Forecast endpoint '{FORECAST_ENDPOINT}' not found — skipping it. Set the "
+          f"forecast_endpoint widget to the name Notebook 4 printed (abi-demand-forecast-<you>), "
+          f"or run Notebook 4. The Forecast tab's live inference won't work until it's attached.")
+if KA_ENDPOINT and _endpoint_exists(KA_ENDPOINT):
     resources.append(AppResource(name="knowledge_assistant", serving_endpoint=AppResourceServingEndpoint(
         name=KA_ENDPOINT, permission=_SEP.CAN_QUERY)))
+elif KA_ENDPOINT:
+    print(f"⚠️  KA endpoint '{KA_ENDPOINT}' not found — skipping it. Check the ka_endpoint "
+          f"widget (it must be the serving-endpoint NAME from Notebook 3), or leave it blank.")
 
 def _create(res):
     w.apps.create_and_wait(App(
@@ -424,14 +442,18 @@ KA_ENDPOINT = dbutils.widgets.get("ka_endpoint").strip()
 if not KA_ENDPOINT:
     print("Skipped — set the ka_endpoint widget to grant CAN_QUERY on the assistant.")
 else:
-    ep = w.serving_endpoints.get(name=KA_ENDPOINT)
-    w.serving_endpoints.update_permissions(  # additive — keeps existing ACLs
-        serving_endpoint_id=ep.id,
-        access_control_list=[ServingEndpointAccessControlRequest(
-            service_principal_name=SP,
-            permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
-    )
-    print(f"Granted CAN_QUERY on '{KA_ENDPOINT}' to the app SP.")
+    try:
+        ep = w.serving_endpoints.get(name=KA_ENDPOINT)   # errors if the name is wrong
+        w.serving_endpoints.update_permissions(  # additive — keeps existing ACLs
+            serving_endpoint_id=ep.id,
+            access_control_list=[ServingEndpointAccessControlRequest(
+                service_principal_name=SP,
+                permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
+        )
+        print(f"Granted CAN_QUERY on '{KA_ENDPOINT}' to the app SP.")
+    except Exception as e:  # noqa: BLE001 — wrong name / not deployed yet
+        print(f"(Couldn't grant on KA endpoint '{KA_ENDPOINT}': {str(e).splitlines()[0][:100]}) "
+              f"— check the ka_endpoint widget is the endpoint NAME from Notebook 3.")
 
 @@@CODE
 # 5e · Demand-forecast endpoint grant — the SP must query the forecast endpoint for
