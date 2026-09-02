@@ -20,6 +20,7 @@ LAKE = ("#E4F5EE", "#00A972")      # Lakebase (teal/green)
 APP = ("#FFF6E6", "#E4A11B")       # App (amber)
 CODE = ("#F1ECFB", "#7A5AA6")      # Genie Code (purple)
 KNOW = ("#ECEEFB", "#4C55C6")      # Agent Bricks Knowledge Assistant (indigo)
+ML = ("#FDEEF3", "#C0397A")        # Classical ML / forecasting (magenta)
 
 FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
 
@@ -90,26 +91,46 @@ def _pill(x, y, w, h, label, family=NEUTRAL):
 # Diagrams
 # ==========================================================================
 
-def series_overview():
-    """The notebook journey — shown at the top of every notebook."""
-    y = 44
-    bw, bh = 150, 88
-    gap = 22
-    xs = [22 + i * (bw + gap) for i in range(5)]
-    fams = [DELTA, GENIE, LAKE, APP, CODE]
+def series_overview(highlight=None):
+    """The 7-notebook journey — shown at the top of every notebook.
+
+    Pass ``highlight=N`` (1-7) to spotlight the current notebook: its box is drawn
+    bold with a "you are here" tag and every other step is dimmed. With no
+    ``highlight`` all seven read at equal weight (a plain map of the series).
+    """
+    margin = 22
+    bw, bh, gap, y = 138, 96, 16, 52
+    xs = [margin + i * (bw + gap) for i in range(7)]
+    fams = [DELTA, GENIE, KNOW, ML, LAKE, CODE, APP]
     labels = [
-        ["1 · Data", "synthetic AB", "Delta tables"],
-        ["2 · Genie Agent", "metadata +", "Genie space"],
-        ["3 · Lakebase", "managed Postgres", "app state"],
-        ["4 · App", "Streamlit:", "Genie + Lakebase"],
-        ["5 · Genie Code", "AI-generated,", "governed assets"],
+        ["1 · Data", "synthetic AB", "Delta + Volume"],
+        ["2 · Genie", "metadata →", "Genie space"],
+        ["3 · Knowledge", "Assistant", "docs Q&A"],
+        ["4 · Forecast", "MLflow", "demand model"],
+        ["5 · Lakebase", "managed", "Postgres"],
+        ["6 · Genie Code", "governed", "assets"],
+        ["7 · App", "Streamlit:", "all of it"],
     ]
-    body = _text(22, 28, "The pre-hackathon journey", size=14, weight="700")
+    title = "The pre-hackathon journey"
+    if highlight:
+        title += f"  ·  you are on notebook {highlight} of 7"
+    body = _text(margin, 30, title, size=14, weight="700")
     for i, x in enumerate(xs):
-        body += _box(x, y, bw, bh, labels[i], family=fams[i], title_size=13, sub_size=11)
-        if i < 4:
+        step = i + 1
+        box = _box(x, y, bw, bh, labels[i], family=fams[i], title_size=12, sub_size=10)
+        if highlight and step != highlight:
+            # Dim the steps that aren't the current notebook.
+            box = f'<g opacity="0.4">{box}</g>'
+        body += box
+        if highlight and step == highlight:
+            # Spotlight the current step: a bold accent ring + a "you are here" tag.
+            stroke = fams[i][1]
+            body += (f'<rect x="{x-3}" y="{y-3}" width="{bw+6}" height="{bh+6}" rx="15" '
+                     f'fill="none" stroke="{stroke}" stroke-width="3.5"/>')
+            body += _pill(x + bw/2 - 52, y + bh + 8, 104, 22, "▸ you are here", family=fams[i])
+        if i < 6:
             body += _arrow(x + bw, y + bh/2, xs[i+1], y + bh/2)
-    return _svg(22 + 5*bw + 4*gap + 22, 160, body)
+    return _svg(margin * 2 + 7 * bw + 6 * gap, 190, body)
 
 
 def forecast_flow():
@@ -243,6 +264,67 @@ def delta_to_lakebase():
     body += _box(410, 70, 250, 170, ["Lakebase · abi_app", "schema: app", "app.products", "app.distributors", "app.conversations"], family=LAKE, sub_size=12)
     body += _text(410, 262, "conversations table is written by the App (Notebook 4)", size=11, fill=MUTE)
     return _svg(850, 285, body)
+
+
+def lakebase_app_schema():
+    """The `app` schema: synced (read-only) vs native (writable) — notebook 5, Step 4/5."""
+    body = _text(30, 26, "The app schema: two kinds of table for two jobs", size=15, weight="700")
+    panel_h = 296
+    # Left panel: SYNCED from Delta — read-only, managed by Unity Catalog.
+    body += _box(30, 48, 380, panel_h, [""], family=DELTA, rx=14)
+    body += _text(220, 76, "Synced from Delta (read-only)", size=13, fill=INK, anchor="middle", weight="700")
+    body += _text(220, 96, "materialized by a Lakeflow pipeline · appears in Unity Catalog",
+                  size=10, fill=MUTE, anchor="middle")
+    synced = [
+        ("app.products", "reference catalogue (NB1)"),
+        ("app.demand_forecast", "the forecast the app charts (NB4)"),
+    ]
+    for i, (name, cap) in enumerate(synced):
+        body += _pill(55, 118 + i*72, 320, 30, name, DELTA)
+        body += _text(60, 166 + i*72, cap, size=11, fill=MUTE)
+    body += _text(55, 300, "You can't write to these — writes go to the native side →",
+                  size=11, fill=MUTE)
+    # Right panel: NATIVE Postgres — the app reads AND writes these.
+    body += _box(440, 48, 380, panel_h, [""], family=LAKE, rx=14)
+    body += _text(630, 76, "Native Postgres (the app writes these)", size=13, fill=INK, anchor="middle", weight="700")
+    body += _text(630, 96, "created with CREATE TABLE · transactional app state",
+                  size=10, fill=MUTE, anchor="middle")
+    native = [
+        ("app.distributors", "reference · edited in the app (NB5 copy)"),
+        ("app.conversations", "one row per Genie Q&A turn"),
+        ("app.action_items", "the review / approval queue"),
+        ("app.forecast_scenarios", "each what-if the Forecast tab runs"),
+    ]
+    for i, (name, cap) in enumerate(native):
+        body += _pill(465, 116 + i*52, 320, 26, name, LAKE)
+        body += _text(470, 152 + i*52, cap, size=10, fill=MUTE)
+    body += _text(30, 372,
+                  "Rule of thumb: sync what only Delta owns (read-only mirrors); create native tables for anything the app writes.",
+                  size=11, fill=MUTE)
+    return _svg(850, 392, body)
+
+
+def synced_table_flow():
+    """How a Lakebase synced table is built from a Delta source — notebook 5, Step 5."""
+    body = _text(30, 26, "How a synced table is built (Delta → Lakebase, read-only)", size=15, weight="700")
+    steps = [
+        (["Delta table (UC)", "products /", "demand_forecast"], DELTA),
+        (["Lakeflow pipeline", "SNAPSHOT:", "full refresh"], APP),
+        (["Database Catalog", "registers the DB", "in Unity Catalog"], KNOW),
+        (["Synced table", "app.products", "in Lakebase PG"], LAKE),
+        (["App reads it", "as normal", "Postgres (SELECT)"], NEUTRAL),
+    ]
+    bw, bh, gap, y = 150, 96, 22, 58
+    xs = [30 + i * (bw + gap) for i in range(len(steps))]
+    for i, (lbl, fam) in enumerate(steps):
+        body += _box(xs[i], y, bw, bh, lbl, family=fam, title_size=13, sub_size=11)
+        if i < len(steps) - 1:
+            body += _arrow(xs[i] + bw, y + bh / 2, xs[i+1], y + bh / 2)
+    body += _text(30, y + bh + 28,
+                  "SNAPSHOT = initial full load + accelerated refresh when you re-run it (no Change Data Feed needed). "
+                  "The table shows up in Unity Catalog; the app just SELECTs it.",
+                  size=11, fill=MUTE)
+    return _svg(30 + len(steps)*bw + (len(steps)-1)*gap + 30, 210, body)
 
 
 def app_architecture():
@@ -441,11 +523,17 @@ def app_auth_obo():
 # registry: token key -> function
 DIAGRAMS = {
     "series_overview": series_overview,
+    # Per-notebook journey maps: series_overview_1 .. series_overview_7 each
+    # spotlight their own step. Wired in via @@@IMG:series_overview_<n>.
+    **{f"series_overview_{_n}": (lambda n=_n: series_overview(highlight=n))
+       for _n in range(1, 8)},
     "data_model": data_model,
     "source_to_delta": source_to_delta,
     "genie_metadata": genie_metadata,
     "lakebase_vs_delta": lakebase_vs_delta,
     "delta_to_lakebase": delta_to_lakebase,
+    "lakebase_app_schema": lakebase_app_schema,
+    "synced_table_flow": synced_table_flow,
     "app_architecture": app_architecture,
     "request_flow": request_flow,
     "genie_code_flow": genie_code_flow,

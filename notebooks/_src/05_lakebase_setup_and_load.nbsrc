@@ -8,6 +8,8 @@ also needs **transactional state**: review queues, approvals, drafts, and — fo
 our app — a **conversation log**. That's what **Lakebase** (fully-managed
 Postgres) is for.
 
+@@@IMG:series_overview_5
+
 ### When Lakebase, when Delta? (from the deck)
 Reach for Lakebase for **operational, transactional** state — and keep analytics
 in Delta. The app in Notebook 7 uses both: Genie reads Delta, the app writes its
@@ -15,17 +17,53 @@ conversation log to Lakebase.
 
 @@@IMG:lakebase_vs_delta
 
+### Two ways to get Delta data into Lakebase
+
+There are two very different kinds of table in our `app` schema, and the
+difference decides *how* the data gets there:
+
+- **Synced tables** — a **read-only mirror of a Delta table**, kept in Lakebase by
+  a managed **Lakeflow pipeline** and **registered in Unity Catalog**. This is the
+  right tool for reference data and model output the app only ever *reads*
+  (`products`, `demand_forecast`). Refresh it from Delta on demand — no hand-rolled
+  copy code, and it shows up in your catalog.
+- **Native Postgres tables** — ordinary `CREATE TABLE`s the app **writes** to
+  (`distributors` is edited in the app; `conversations`, `action_items`, and
+  `forecast_scenarios` are written at runtime). A synced table is read-only, so
+  **anything the app writes has to be a native table** — this is the transactional
+  state Lakebase exists for.
+
+@@@IMG:lakebase_app_schema
+
+> **Why not sync everything?** Synced tables can't be written to. `distributors`
+> looks like reference data, but the app's *Edit distributors* tab does
+> `INSERT`/`UPDATE`/`DELETE` on it — so it stays native. The rule of thumb: **sync
+> what only Delta owns; create native tables for anything the app changes.**
+
 ### What you'll do
 1. Create a **Lakebase instance** (provisioned tier)
-2. Create a logical database + `app` schema
-3. Create the **`conversations`** table the app writes to (Notebook 7)
-4. Copy **reference data** (`products`, `distributors`) and the
-   **`demand_forecast`** table (Notebook 4) from Delta → Lakebase
+2. Create a logical database + `app` schema, and **try to register it in Unity
+   Catalog** as a *database catalog* (what lets synced tables land here and appear in UC)
+3. Create the **native** write-back tables the app edits (`distributors`,
+   `conversations`, `action_items`, `forecast_scenarios`)
+4. **Sync** the read-only Delta tables (`products`, `demand_forecast`) into Lakebase
+   as **synced tables** — or, if you can't register a catalog, fall back to a plain copy
+
+> ### ⚠️ Synced tables need a one-time admin step
+> A synced table is a governed Unity Catalog object, so it must live in a **database
+> catalog** — and *creating* that catalog needs **`CREATE CATALOG` on the metastore**,
+> which most participants (and FE-VM users) don't have. So this notebook is built to
+> **degrade gracefully**: it tries to register the catalog and create synced tables; if
+> that's denied, it automatically **falls back to a native `to_sql` copy** of the same
+> two tables. The app works either way. To get *real* synced tables, have a metastore
+> admin register the catalog once (or grant `CREATE CATALOG`), then set the
+> `db_catalog` widget to that catalog and re-run.
 
 > **Prerequisites:** an **FE-VM serverless workspace** (Lakebase needs serverless).
-> Notebook 1 completed (reference data); Notebook 4 completed if you want the
-> **`demand_forecast`** copied so the app can chart it. This notebook uses the
-> Databricks SDK, so it runs from inside the workspace with no CLI needed.
+> Notebook 1 completed (`products`); Notebook 4 completed if you want `demand_forecast`
+> too. This notebook uses the Databricks SDK, so it runs from inside the workspace with
+> no CLI needed. The synced-table path *additionally* needs a database catalog (see the
+> note above); without one, the fallback copy runs automatically.
 
 @@@CODE
 %pip install --quiet --upgrade databricks-sdk psycopg2-binary sqlalchemy
@@ -36,6 +74,7 @@ dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Delta schema base (username appended — matches NB1)")
 dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance name")
 dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")
+dbutils.widgets.text("db_catalog", "abi_lakebase", "UC database-catalog base (username appended)")
 dbutils.widgets.dropdown("capacity", "CU_1", ["CU_1", "CU_2", "CU_4", "CU_8"], "Instance capacity")
 
 # Per-user identity (deterministic). The Lakebase *instance* is shared (one is
@@ -50,9 +89,14 @@ SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{_slug}"
 FQ = f"{CATALOG}.{SCHEMA}"
 INSTANCE = dbutils.widgets.get("lakebase_instance").strip()   # shared instance
 APP_DB = f"{dbutils.widgets.get('app_db').strip()}_{_slug}"    # per-user logical DB
+# The database catalog is the UC name that surfaces this logical Postgres DB in
+# Unity Catalog — it's what synced tables target (their 3-part name is
+# <db_catalog>.<schema>.<table>). Per-user so a shared workspace doesn't collide.
+DB_CATALOG = f"{dbutils.widgets.get('db_catalog').strip()}_{_slug}"
 CAPACITY = dbutils.widgets.get("capacity")
 print(f"Delta source : {FQ}")
 print(f"Lakebase     : instance='{INSTANCE}' db='{APP_DB}' capacity={CAPACITY}")
+print(f"DB catalog   : {DB_CATALOG}  (registers '{APP_DB}' in Unity Catalog)")
 
 @@@MD
 ## Step 1 · Create the Lakebase instance
@@ -143,6 +187,10 @@ with admin_engine.connect() as c:
 
 @@@MD
 ## Step 3 · Create the logical database + `app` schema
+
+First the Postgres side: a per-user logical database and an `app` schema to hold
+both kinds of table. (Our SQLAlchemy engine needs the database to exist to connect
+to it, so we create it directly in Postgres here.)
 @@@CODE
 with admin_engine.connect() as c:
     exists = c.execute(
@@ -161,26 +209,68 @@ with app_engine.begin() as c:
 print("Schema 'app' ready.")
 
 @@@MD
-## Step 4 · Create the tables
+### Step 3b · Try to register the database in Unity Catalog (a *database catalog*)
 
-Two reference tables (`app.products`, `app.distributors`) the app reads for fast
-lookups **and edits back** (the "Edit distributors" tab), plus three **write-back**
-tables: **`app.conversations`** (every Genie Q&A turn), **`app.action_items`** (a
-review/approval queue), and **`app.forecast_scenarios`** (what-if predictions from
-the Forecast tab). This transactional read/write state is the whole point of Lakebase.
+This is the step that answers *"why don't I see these tables in my catalog?"* A
+**database catalog** registers the Lakebase logical DB as a **Unity Catalog
+catalog**, so its schemas and tables — including any synced tables — show up in UC
+and are governed there. It's also a hard prerequisite for syncing: a synced table's
+name is `<database_catalog>.<schema>.<table>`, so the catalog must exist first.
+
+**Creating a catalog needs `CREATE CATALOG` on the metastore.** So this cell:
+1. **reuses** the catalog if it already exists (an admin may have pre-created it —
+   point the `db_catalog` widget at it), else
+2. **tries to create** it, and
+3. if creation is **denied**, sets `SYNC_ENABLED = False` so Step 5 falls back to a
+   plain `to_sql` copy. Nothing here is fatal.
+@@@CODE
+from databricks.sdk.service.database import DatabaseCatalog
+from databricks.sdk.errors import PermissionDenied
+
+def get_db_catalog(name):
+    try:
+        return w.database.get_database_catalog(name=name)
+    except Exception:
+        return None
+
+SYNC_ENABLED = False
+if get_db_catalog(DB_CATALOG) is not None:
+    SYNC_ENABLED = True
+    print(f"Database catalog '{DB_CATALOG}' already exists — synced tables enabled.")
+else:
+    try:
+        print(f"Registering database catalog '{DB_CATALOG}' → {INSTANCE}/{APP_DB} …")
+        w.database.create_database_catalog(DatabaseCatalog(
+            name=DB_CATALOG,
+            database_instance_name=INSTANCE,
+            database_name=APP_DB,
+            create_database_if_not_exists=True,   # harmless — Step 3 already made it
+        ))
+        SYNC_ENABLED = True
+        print(f"Registered. '{APP_DB}' now appears in Unity Catalog as catalog '{DB_CATALOG}'.")
+    except PermissionDenied as e:
+        # The common case for participants / FE-VM users: no CREATE CATALOG on the metastore.
+        print("⚠️  Can't create a database catalog (need CREATE CATALOG on the metastore).")
+        print("    → Falling back to a native to_sql copy for products/demand_forecast in Step 5.")
+        print("    To get real synced tables: have an admin register the catalog once (or grant")
+        print(f"    CREATE CATALOG), then set the db_catalog widget to it and re-run. [{str(e)[:80]}]")
+    except Exception as e:  # noqa: BLE001 — any other failure also falls back, with the reason shown
+        print(f"⚠️  Database-catalog registration failed ({type(e).__name__}: {str(e)[:100]}).")
+        print("    → Falling back to a native to_sql copy in Step 5.")
+
+print(f"\nSYNC_ENABLED = {SYNC_ENABLED}   "
+      f"({'synced tables' if SYNC_ENABLED else 'native to_sql copy'} in Step 5)")
+
+@@@MD
+## Step 4 · Create the **native** write-back tables
+
+These are the tables the app **writes** to, so they must be ordinary Postgres
+tables (a synced table is read-only). `app.distributors` is reference data the
+*Edit distributors* tab mutates; `app.conversations`, `app.action_items`, and
+`app.forecast_scenarios` are written at runtime. `products` and `demand_forecast`
+are **not** here — they're synced from Delta in Step 5.
 @@@CODE
 DDL = """
-CREATE TABLE IF NOT EXISTS app.products (
-    product_sku     TEXT PRIMARY KEY,
-    product_name    TEXT NOT NULL,
-    brand           TEXT,
-    category        TEXT,
-    package_type    TEXT,
-    units_per_case  INT,
-    unit_cost_usd   NUMERIC(10,2),
-    list_price_usd  NUMERIC(10,2)
-);
-
 CREATE TABLE IF NOT EXISTS app.distributors (
     distributor_id    TEXT PRIMARY KEY,
     distributor_name  TEXT NOT NULL,
@@ -237,68 +327,177 @@ CREATE INDEX IF NOT EXISTS idx_conversations_created ON app.conversations(create
 with app_engine.begin() as c:
     for stmt in [s for s in DDL.split(";") if s.strip()]:
         c.execute(text(stmt))
-print("Tables created: app.products, app.distributors, app.conversations, "
+print("Native tables created: app.distributors, app.conversations, "
       "app.action_items, app.forecast_scenarios")
+print("(app.products and app.demand_forecast are synced from Delta in Step 5.)")
 
 @@@MD
-## Step 5 · Copy reference data + the forecast from Delta → Lakebase
+## Step 5 · Sync the read-only Delta tables into Lakebase
 
-We read the Delta tables into pandas and bulk-load them into Lakebase. For the
-modest reference tables here, pandas `to_sql` is perfectly fine. (For large or
-continuously-updated tables you'd use a Lakebase **synced table** instead — noted
-in the recap.) The **`demand_forecast`** table (Notebook 4) is copied the same
-way so the Notebook 7 app can chart it from Postgres.
+Now the synced tables. Each one is a **read-only mirror of a Delta table**,
+materialized into Lakebase by a managed **Lakeflow pipeline** and registered under
+the database catalog from Step 3b — so it's live-refreshable and visible in Unity
+Catalog. We sync the two tables the app only *reads*: **`products`** (Notebook 1)
+and **`demand_forecast`** (Notebook 4).
 
-@@@IMG:delta_to_lakebase
+@@@IMG:synced_table_flow
+
+We use **`SNAPSHOT`** scheduling: an initial full load, and an accelerated full
+refresh whenever the pipeline re-runs. SNAPSHOT needs **no Change Data Feed** on
+the source (unlike `TRIGGERED`/`CONTINUOUS`, which sync incrementally) — the
+simplest, most portable choice for reference data. You still declare the
+**primary key** so the pipeline knows each row's identity.
+@@@CODE
+from databricks.sdk.service.database import (
+    SyncedDatabaseTable, SyncedTableSpec, NewPipelineSpec, SyncedTableSchedulingPolicy)
+
+def sync_from_delta(delta_name, primary_keys):
+    """Create a SNAPSHOT synced table <DB_CATALOG>.app.<delta_name> from the Delta
+    table <FQ>.<delta_name>. Idempotent: skips if the synced table already exists."""
+    full_name = f"{DB_CATALOG}.app.{delta_name}"        # 3-part name in the DB catalog
+    try:
+        w.database.get_synced_database_table(name=full_name)
+        print(f"  synced table {full_name} already exists — skipping create.")
+        return full_name
+    except Exception:
+        pass
+    w.database.create_synced_database_table(SyncedDatabaseTable(
+        name=full_name,
+        database_instance_name=INSTANCE,
+        logical_database_name=APP_DB,
+        spec=SyncedTableSpec(
+            source_table_full_name=f"{FQ}.{delta_name}",   # the Delta source (UC)
+            primary_key_columns=primary_keys,
+            scheduling_policy=SyncedTableSchedulingPolicy.SNAPSHOT,
+            create_database_objects_if_missing=True,        # create app schema/table if needed
+            # The pipeline keeps its state in a UC schema you own (your Delta schema).
+            new_pipeline_spec=NewPipelineSpec(storage_catalog=CATALOG, storage_schema=SCHEMA),
+        ),
+    ))
+    print(f"  creating synced table {full_name}  (from {FQ}.{delta_name}) …")
+    return full_name
+
+import pandas as pd
+
+def copy_from_delta(delta_name):
+    """Fallback path: plain reverse-ETL copy Delta → a native Postgres table.
+    Used when we couldn't register a database catalog (no synced tables)."""
+    pdf = spark.table(f"{FQ}.{delta_name}").toPandas()
+    pdf.to_sql(delta_name, app_engine, schema="app", if_exists="replace", index=False)
+    print(f"  copied {FQ}.{delta_name} → app.{delta_name}  ({len(pdf)} rows, native table)")
+
+# The two read-only tables + their primary keys. demand_forecast only if NB4 ran.
+READ_ONLY = [("products", ["product_sku"])]
+if spark.catalog.tableExists(f"{FQ}.demand_forecast"):
+    READ_ONLY.append(("demand_forecast", ["segment", "month"]))
+else:
+    print("(skipped demand_forecast — run Notebook 4 first to create it.)")
+
+synced = []
+if SYNC_ENABLED:
+    print("Creating synced tables (read-only mirrors of Delta)…")
+    for name, pks in READ_ONLY:
+        synced.append(sync_from_delta(name, pks))
+else:
+    # No database catalog available → reverse-ETL copy into native tables instead.
+    # The app reads app.products / app.demand_forecast identically either way.
+    print("SYNC_ENABLED is False → copying the read-only tables with to_sql instead…")
+    for name, _pks in READ_ONLY:
+        copy_from_delta(name)
+
+@@@MD
+If we created synced tables, the initial sync runs as a pipeline in the background
+(a minute or two for these small tables). Poll until each one reports a completed
+sync before the app tries to read it. (In the fallback/copy path there's nothing to
+wait for — `synced` is empty — so this cell no-ops.)
+@@@CODE
+import time
+
+def sync_state(full_name):
+    st = w.database.get_synced_database_table(name=full_name)
+    dss = getattr(st, "data_synchronization_status", None)
+    # The status object carries the current pipeline/sync state; stringify defensively
+    # across SDK versions rather than assuming a specific attribute name.
+    return str(getattr(dss, "detailed_state", dss) or "UNKNOWN")
+
+if not synced:
+    print("No synced tables to poll (fallback copy path, or nothing to sync).")
+for full_name in synced:
+    for _ in range(20):  # ~10 min max per table
+        state = sync_state(full_name)
+        print(f"  {full_name}: {state}")
+        # Terminal-ish states contain ONLINE (ready) or FAILED.
+        if "ONLINE" in state.upper() or "FAILED" in state.upper():
+            break
+        time.sleep(30)
+if synced:
+    print("Done — synced tables provisioned (ONLINE = ready to read).")
+
+@@@MD
+### Copy the one reference table the app *edits* (`distributors`)
+
+`distributors` can't be a synced table because the *Edit distributors* tab writes
+to it. So it stays a **native** table (created in Step 4) and we do a one-time
+`to_sql` load of the current Delta rows into it. Re-running is safe (`replace`).
 @@@CODE
 import pandas as pd
 
-def copy_table(delta_name, pg_table):
-    pdf = spark.table(f"{FQ}.{delta_name}").toPandas()
-    # replace = truncate + reload, so re-running the notebook is safe.
-    pdf.to_sql(pg_table, app_engine, schema="app", if_exists="replace", index=False)
-    print(f"  copied {delta_name} -> app.{pg_table}  ({len(pdf)} rows)")
-
-print("Copying reference data…")
-copy_table("products", "products")
-copy_table("distributors", "distributors")
-
-# The demand forecast from Notebook 4 (the app charts this). Skip gracefully if
-# you haven't run Notebook 4 yet.
-try:
-    copy_table("demand_forecast", "demand_forecast")
-except Exception as e:
-    print(f"  (skipped demand_forecast — run Notebook 4 first: {e})")
-print("Done.")
+pdf = spark.table(f"{FQ}.distributors").toPandas()
+# replace = drop + reload, so re-running the notebook is safe. Keeps it a plain,
+# writable Postgres table (unlike the synced tables above).
+pdf.to_sql("distributors", app_engine, schema="app", if_exists="replace", index=False)
+print(f"Loaded app.distributors ({len(pdf)} rows) as a native, writable table.")
 
 @@@MD
-## Step 6 · Verify
+## Step 6 · Verify — in Postgres *and* in Unity Catalog
+
+Two checks. First, row counts straight from Postgres (the app reads it this way).
+Second, confirm the synced tables now show up in **Unity Catalog** under your
+database catalog — the thing that was missing before.
 @@@CODE
+# 1) Postgres view — what the app sees when it connects.
 with app_engine.connect() as c:
-    for t in ["products", "distributors", "conversations", "action_items", "demand_forecast"]:
+    for t in ["products", "distributors", "conversations", "action_items",
+              "forecast_scenarios", "demand_forecast"]:
         try:
             n = c.execute(text(f"SELECT COUNT(*) FROM app.{t}")).scalar()
-            print(f"app.{t:16s} {n:>6} rows")
+            print(f"app.{t:18s} {n:>6} rows")
         except Exception:
-            print(f"app.{t:16s}    (not present yet)")
+            print(f"app.{t:18s}    (not present yet)")
     print("\nSample distributors:")
     for row in c.execute(text("SELECT distributor_name, region, tier FROM app.distributors LIMIT 5")):
         print("  ", row)
 
+@@@CODE
+# 2) Unity Catalog view — the synced tables are governed UC objects now.
+print(f"Tables in Unity Catalog under {DB_CATALOG}.app:\n")
+try:
+    display(spark.sql(f"SHOW TABLES IN {DB_CATALOG}.app"))
+except Exception as e:
+    print(f"(If this errors, the catalog may still be provisioning.) {e}")
+
 @@@MD
 ## ✅ Recap & what's next
 
-You provisioned a **Lakebase** instance, created the `abi_app` database with an
-`app` schema, and loaded reference data, the `demand_forecast`, and the
-write-back tables (`conversations`, `action_items`).
+You provisioned a **Lakebase** instance, created the `abi_app` database + `app`
+schema, **registered it in Unity Catalog** as a database catalog, **synced** the
+read-only Delta tables (`products`, `demand_forecast`) into it, and created the
+**native** write-back tables the app edits (`distributors`, `conversations`,
+`action_items`, `forecast_scenarios`).
 
 **Key ideas**
 - Lakebase = **managed Postgres** for low-latency, transactional **app state**.
 - OAuth token = the Postgres password (short-lived; mint fresh).
-- Reference data + the forecast were **copied** with `to_sql`; for large/live
-  tables use a **synced table** (Delta → Lakebase reverse-ETL) instead.
-- Analytics stays in Delta/Genie; **operational writes** (the conversation log)
-  go to Lakebase.
+- **Synced tables** are read-only Delta mirrors, kept fresh by a Lakeflow pipeline
+  and **governed in Unity Catalog** — use them for reference data and model output
+  the app only reads (`products`, `demand_forecast`).
+- **Native Postgres tables** are for anything the app **writes** (`distributors`
+  edits, the conversation log, the review queue, what-if scenarios) — a synced
+  table can't be written to.
+- A **database catalog** is what makes a Lakebase DB (and its synced tables) visible
+  and governed in Unity Catalog.
+- **`SNAPSHOT`** sync needs no Change Data Feed; switch to `TRIGGERED`/`CONTINUOUS`
+  (with CDF on the source) when you want incremental, low-latency refresh.
 
 You've now built every data + AI piece the app needs (Genie, Knowledge Assistant,
 forecast, Lakebase). **Next → Notebook 6:** **Genie Code** — the governed,

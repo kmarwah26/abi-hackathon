@@ -8,7 +8,7 @@ the tables from Notebook 1 into a governed **Genie agent**: rich comments,
 constraints, and certified example SQL — then creates the Genie space *as code*
 and validates it.
 
-@@@IMG:series_overview
+@@@IMG:series_overview_2
 
 ### Genie in one slide (from the enablement deck)
 - **Curate a small set of tables — five or fewer to start.** We use exactly 4.

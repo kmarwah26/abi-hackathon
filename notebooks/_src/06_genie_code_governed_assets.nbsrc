@@ -14,6 +14,8 @@ metadata, it proposes SQL / code and can **create or modify governed assets**
 (views, metric views, functions, tables), with permissions, lineage, and audit
 all enforced by Unity Catalog.
 
+@@@IMG:series_overview_6
+
 Because it's interactive, you don't call it from *this* notebook. Instead, this
 notebook is a **playbook**: ready-to-paste prompts (grounded in your beverage
 supply-chain schema) for common tasks, plus the review-and-ship discipline.

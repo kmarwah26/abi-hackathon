@@ -10,6 +10,8 @@ those PDFs into a governed **Agent Bricks → Knowledge Assistant**: a
 retrieval-augmented agent that answers *"how do we…"* questions **with citations**
 back to the source docs.
 
+@@@IMG:series_overview_3
+
 It needs only the **`knowledge_base` Volume from Notebook 1** — the PDFs you
 generated there. The **app in Notebook 7** will call this assistant alongside
 Genie, so keep the endpoint name it produces.

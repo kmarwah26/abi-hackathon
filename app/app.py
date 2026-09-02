@@ -779,10 +779,11 @@ def save_distributors(edited_df):
 def render_edit_tab(user_email):
     st.subheader("Edit distributors — written straight to Lakebase")
     st.caption(
-        "This table was **synced from Delta into Lakebase** (`app.distributors`, "
-        "Notebook 5). Edit a cell, add a row, or delete one, then **Save** — the app "
-        "writes the changes back to **Lakebase (Postgres)** as `INSERT`/`UPDATE`/"
-        "`DELETE`. It's durable, transactional, and shared across everyone using the app."
+        "`app.distributors` is a **native Postgres table** in Lakebase (loaded from "
+        "Delta in Notebook 5) — *not* a synced table, precisely because it's editable. "
+        "Edit a cell, add a row, or delete one, then **Save** — the app writes the "
+        "changes back to **Lakebase (Postgres)** as `INSERT`/`UPDATE`/`DELETE`. It's "
+        "durable, transactional, and shared across everyone using the app."
     )
     if get_engine() is None:
         st.warning("Lakebase not configured — set LAKEBASE_INSTANCE in app.yaml.")

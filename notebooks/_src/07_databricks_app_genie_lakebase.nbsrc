@@ -13,6 +13,8 @@ four tabs that
    **live what-if inference** against its Model Serving endpoint (Notebook 4, Step 6), and
 4. logs every Genie turn — and runs a review queue — in **Lakebase** (Notebook 5).
 
+@@@IMG:series_overview_7
+
 ### App anatomy (from the deck)
 - **Connected components:** a Databricks App can call a SQL Warehouse, Model
   Serving, **Agent Bricks**, **Genie**, and the Jobs API. Ours uses **Genie**, a
@@ -299,15 +301,17 @@ with engine.begin() as c:
     c.execute(text(f'GRANT SELECT, INSERT ON app.conversations TO "{SP}"'))
     # action_items is read/written by the app's "Action items" tab — full CRUD.
     c.execute(text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON app.action_items TO "{SP}"'))
-    # distributors is edited in place by the "Edit distributors" tab — full CRUD.
+    # distributors is a NATIVE table edited in place by the "Edit distributors" tab — full CRUD.
     c.execute(text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON app.distributors TO "{SP}"'))
     # forecast_scenarios stores each what-if inference from the Forecast tab.
     c.execute(text(f'GRANT SELECT, INSERT, UPDATE, DELETE ON app.forecast_scenarios TO "{SP}"'))
-    # demand_forecast is read-only for the Forecast tab's chart.
+    # products and demand_forecast are SYNCED tables (read-only mirrors of Delta,
+    # Notebook 5) — the app only SELECTs them, so read-only is all the SP needs.
+    c.execute(text(f'GRANT SELECT ON app.products TO "{SP}"'))
     c.execute(text(f'GRANT SELECT ON app.demand_forecast TO "{SP}"'))
-    # serial/bigserial sequences backing the write-back tables.
+    # serial/bigserial sequences backing the native write-back tables.
     c.execute(text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO "{SP}"'))
-print(f"Granted conversation + action-item + forecast access to the app SP.")
+print(f"Granted read/write access on the app tables to the app SP.")
 
 @@@CODE
 # 5c · SQL-warehouse grant — the SP must be allowed to USE the warehouse the

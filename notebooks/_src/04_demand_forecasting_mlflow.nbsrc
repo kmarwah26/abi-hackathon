@@ -9,6 +9,8 @@ The forecast it produces is written to a **Delta table** that **Notebook 5**
 (Lakebase) loads and the **Notebook 7** app charts — so this model becomes a live
 tile in the final app.
 
+@@@IMG:series_overview_4
+
 It also uses **Feature Engineering in Unity Catalog**: the engineered features
 live in a governed **feature table**, and the model is trained + logged through
 the Feature Engineering client, so feature **lineage** and **at-scoring feature
@@ -253,6 +255,8 @@ def forecast_segment(seg, horizon):
                "month_num": m.month, "trend": (m.year - BASE_YEAR) * 12 + m.month}
         yhat = float(model.predict(pd.DataFrame([row])[MODEL_INPUT])[0])
         out.append({"segment": seg, "month": m.date(), "forecast_cases": max(0, round(yhat))})
+        # Feed the prediction back in so it becomes lag_1 for the next month —
+        # this is what makes the roll-forward multi-step (recursive forecasting).
         cases.append(yhat)
     return out
 
@@ -323,7 +327,10 @@ if FORECAST_ENDPOINT in [e.name for e in w.serving_endpoints.list()]:
     print(f"Updating endpoint '{FORECAST_ENDPOINT}' → v{SERVING_VERSION} (provisioning ~10 min).")
 else:
     w.serving_endpoints.create(
-        name=FORECAST_ENDPOINT, config=EndpointCoreConfigInput(served_entities=served))
+        name=FORECAST_ENDPOINT,
+        # EndpointCoreConfigInput requires `name` in the SDK version on ML/serverless
+        # runtimes — set it to the endpoint name to match the outer `name=` argument.
+        config=EndpointCoreConfigInput(name=FORECAST_ENDPOINT, served_entities=served))
     print(f"Creating endpoint '{FORECAST_ENDPOINT}' (first build ~10-15 min).")
 @@@CODE
 # Grant the app's service principal CAN_QUERY — best-effort. On a first run the app

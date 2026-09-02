@@ -8,7 +8,7 @@ The starting point for the whole series. We generate a small, realistic
 governed **Delta tables** in Unity Catalog. Every later notebook builds on these
 exact tables.
 
-@@@IMG:series_overview
+@@@IMG:series_overview_1
 
 ### What you'll learn
 - How source data becomes **Delta tables under Unity Catalog** (`catalog.schema.table`)
@@ -257,6 +257,8 @@ for _ in range(9000):
     season = 1.0
     if d.month in (5, 6, 7, 8) and sku_cat[sku] in ("Core", "Value", "Premium"):
         season = 1.6
+    # Gamma gives a realistic right-skewed order size (mean ≈ shape*scale ≈ 24
+    # cases): many modest orders, a few large ones — never zero (floored at 1).
     cases = max(1, int(np.random.gamma(shape=3.0, scale=8.0) * season))
     price = round(sku_price[sku] * np.random.uniform(0.92, 1.02), 2)
     order_rows.append({
@@ -295,8 +297,10 @@ for _, o in orders.iterrows():
     distance = int(np.random.uniform(50, 1800))
     ship_date = o["order_date"] + timedelta(days=int(np.random.randint(1, 4)))
     requested = ship_date + timedelta(days=int(np.random.randint(2, 6)))
-    on_time = bool(np.random.rand() < 0.82)
+    on_time = bool(np.random.rand() < 0.82)   # ~82% of shipments hit the window
     if o["status"] == "Delivered":
+        # On-time deliveries land 0-1 days EARLY (actual <= requested); late ones
+        # slip 1-4 days past the requested date. Only delivered orders get a date.
         slip = int(np.random.randint(0, 2)) if on_time else int(np.random.randint(1, 5))
         actual = requested + timedelta(days=(0 - slip) if on_time else slip)
     else:
