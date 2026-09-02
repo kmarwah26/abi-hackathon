@@ -551,10 +551,3 @@ You created four governed Delta tables under `{catalog}.{schema}`:
 
 **Next → Notebook 2:** add the descriptions, constraints, and example queries
 that turn these tables into a high-quality **Genie agent**.
-
-@@@MD
----
-### ➡️ Continue to **[Notebook 2 · Genie Agent + Metadata Best Practices](./02_genie_agent)**
-
-Turn these tables into a governed Genie agent with rich metadata, then create the
-Genie space as code. *(Use the same `catalog`/`schema` you set above.)*

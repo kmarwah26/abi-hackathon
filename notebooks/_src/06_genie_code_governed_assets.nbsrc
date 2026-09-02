@@ -176,11 +176,3 @@ hackathon and adapt them to your own tables.
 That's the **governed AI-assisted development** pattern. You've now covered every
 building block — data, a Genie agent, a Knowledge Assistant, a forecast, Lakebase,
 and Genie Code. **Next → Notebook 7** assembles them into one Databricks App.
-
-@@@MD
----
-### ➡️ Continue to **[Notebook 7 · Databricks App — Genie + Lakebase + Knowledge Assistant + Forecast](./07_databricks_app_genie_lakebase)**
-
-The finale: a Streamlit app that answers data questions with **Genie**, policy
-questions with the **Knowledge Assistant**, charts the **forecast**, and logs
-everything to **Lakebase**.

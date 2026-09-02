@@ -16,7 +16,11 @@ It needs only the **`knowledge_base` Volume from Notebook 1** — the PDFs you
 generated there. The **app in Notebook 7** will call this assistant alongside
 Genie, so keep the endpoint name it produces.
 
-@@@IMG:knowledge_assistant_flow
+> **You won't create the endpoint from code here.** Agent Bricks builds and deploys
+> the assistant from the **UI** (Step 2) — that's the one manual step. Everything
+> else in this notebook just **confirms** the docs (Step 1) and **queries** the
+> deployed endpoint (Step 4). The diagrams in Step 2 show what Databricks builds for
+> you behind that one click.
 
 ### What is Agent Bricks?
 **Agent Bricks** is Databricks' guided way to build production agents. The
@@ -83,33 +87,40 @@ assert pdfs, f"No PDFs in {VOL_PATH} — run Notebook 1 · Step 5 first."
 print(f"\n{len(pdfs)} documents ready in {VOL_PATH}")
 
 @@@MD
-## Step 2 · Create the Knowledge Assistant (Agent Bricks)
+## Step 2 · Create the Knowledge Assistant (Agent Bricks) — the one manual step
 
-Agent Bricks is a **guided, UI-first** experience — you create the assistant in
-the workspace, and Databricks builds and deploys the retrieval pipeline for you.
-It takes ~2 minutes of clicking; there's no code to write here.
+Agent Bricks is a **guided, UI-first** experience: you fill in a short form and
+Databricks builds and deploys the whole retrieval pipeline. There's **no code to
+write** — here's the form you fill in:
 
-1. In the left nav, open **Agents** → **Agent Bricks** → **Knowledge Assistant**
-   → **Build**.
-2. **Name** it something per-person so a shared workspace doesn't collide, e.g.
+@@@IMG:ka_ui_steps
+
+1. Left nav → **Agents** → **Agent Bricks** → **Knowledge Assistant** → **Build**.
+2. **Name** it per-person so a shared workspace doesn't collide, e.g.
    `abi-knowledge-assistant-<yourname>`.
-3. **Description / instructions** — this steers tone and scope. Paste something like:
-   > *"You are a supply-chain operations assistant for an Anheuser-Busch beverage
-   > distribution business. Answer questions about distributor onboarding and
-   > credit, carrier and freight procedures, product quality and packaging,
-   > order fulfillment SLAs, and returns/sustainability policy — using only the
-   > provided documents, and cite them. If the answer isn't in the docs, say so."*
+3. **Instructions** — steer tone and scope, e.g. *"You are a supply-chain operations
+   assistant for an Anheuser-Busch beverage distribution business… answer only from
+   the provided documents, and cite them. If the answer isn't in the docs, say so."*
 4. **Add knowledge source** → **Unity Catalog Volume** → pick
-   **`{catalog}.{schema}.knowledge_base`** (the Volume from Step 1). Give it a
-   short label like *"Supply-chain policies & SOPs"*.
-5. **Create.** Databricks now chunks, embeds, and indexes the PDFs (via **Vector
-   Search**) and deploys a **serving endpoint**. Indexing the handful of docs
-   here takes a few minutes.
+   **`{catalog}.{schema}.knowledge_base`** (the Volume from Step 1).
+5. **Create**, then wait a few minutes for it to deploy.
 
-> **Why the UI?** Knowledge Assistant creation is driven from Agent Bricks today.
-> Everything *after* creation — querying, evaluation, wiring into an app — is
-> fully programmatic, which is what the rest of this notebook shows. (You can also
-> iterate on quality in the UI with its built-in eval + "Improve quality" tools.)
+### What Databricks builds when you click Create
+
+You don't write any of this — but it's worth knowing what's happening in the
+backend, because it's a full **RAG (retrieval-augmented generation)** pipeline:
+
+@@@IMG:ka_backend
+
+At **build time** it parses the PDFs, splits them into passages, embeds each one,
+and stores the vectors in a **Vector Search index**. At **query time** it embeds
+your question, retrieves the most similar passages, and has an **LLM** compose an
+answer *from those passages* — with **citations**. All of it is wrapped in one
+**Model Serving endpoint**, governed by Unity Catalog.
+
+> **Why the UI?** Knowledge Assistant *creation* is driven from Agent Bricks today.
+> Everything after — querying, evaluation, wiring into an app — is programmatic,
+> which is what the rest of this notebook shows.
 
 @@@MD
 ## Step 3 · Find your endpoint
@@ -153,20 +164,15 @@ ans, hist = ask_ka(q1)
 print("Q:", q1, "\n\nA:", ans)
 
 @@@CODE
-# A few more, each grounded in a different document.
-for q in [
-    "How is on-time delivery defined, and which distribution center serves the West region?",
-    "What temperature should packaged product be stored at, and how should half kegs be handled?",
-    "Within how many days must a damaged-goods return be reported?",
-]:
-    a, _ = ask_ka(q)
-    print(f"{'='*88}\nQ: {q}\n{'-'*88}\nA: {a}\n")
+# One more grounded question, then a multi-turn follow-up (the assistant keeps
+# context across the conversation — note we pass `hist` back in).
+q2 = "How is on-time delivery defined, and which distribution center serves the West region?"
+ans, hist = ask_ka(q2)
+print("Q:", q2, "\n\nA:", ans, "\n")
 
-@@@CODE
-# Multi-turn: the assistant keeps context across the conversation.
-follow_up = "And what happens to the empty kegs afterwards?"
-a2, hist = ask_ka(follow_up, history=hist)
-print("Q:", follow_up, "\n\nA:", a2)
+follow_up = "And within how many days must a damaged-goods return be reported?"
+a3, hist = ask_ka(follow_up, history=hist)
+print("Q:", follow_up, "\n\nA:", a3)
 
 @@@MD
 ### Fallback (if `get_open_ai_client` isn't available)
@@ -220,10 +226,3 @@ You built a governed **Knowledge Assistant** over the documents from Notebook 1:
 asset the app will surface. (You can also later combine Genie + this assistant
 behind an Agent Bricks **Multi-Agent Supervisor** that routes each question to the
 right specialist.)
-
-@@@MD
----
-### ➡️ Continue to **[Notebook 4 · Demand Forecasting with MLflow](./04_demand_forecasting_mlflow)**
-
-Train and register a demand forecast from Notebook 1's `orders`, and write it to a
-Delta table the app will chart. *(Attach a **Databricks Runtime for ML**.)*

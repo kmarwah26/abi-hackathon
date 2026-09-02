@@ -367,10 +367,3 @@ You turned four raw tables into a well-governed Genie agent.
 **Save your `GENIE_SPACE_ID`.** **Next → Notebook 3:** build an **Agent Bricks
 Knowledge Assistant** over the policy/SOP PDFs from Notebook 1 — the unstructured
 counterpart to this Genie agent.
-
-@@@MD
----
-### ➡️ Continue to **[Notebook 3 · Agent Bricks — Knowledge Assistant](./03_knowledge_assistant_agent_bricks)**
-
-Turn the `knowledge_base` Volume from Notebook 1 into a cited, document-answering
-assistant. *(Keep your `GENIE_SPACE_ID` handy — Notebook 7's app needs it.)*

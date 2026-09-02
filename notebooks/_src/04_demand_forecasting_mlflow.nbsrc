@@ -373,10 +373,3 @@ registered to Unity Catalog. It's intentionally simple — here's where to take 
 
 **Next → Notebook 5:** stand up **Lakebase** (managed Postgres) for the app's
 transactional state — and load this `demand_forecast` table so the app can chart it.
-
-@@@MD
----
-### ➡️ Continue to **[Notebook 5 · Lakebase — Managed Postgres for App State](./05_lakebase_setup_and_load)**
-
-Provision Lakebase, create the app's write-back tables, and copy in reference
-data plus this notebook's `demand_forecast`. *(Use the same `catalog`/`schema`.)*

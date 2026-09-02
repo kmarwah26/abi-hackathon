@@ -325,11 +325,3 @@ You provisioned a **Lakebase** instance, created the `abi_app` database with an
 You've now built every data + AI piece the app needs (Genie, Knowledge Assistant,
 forecast, Lakebase). **Next → Notebook 6:** **Genie Code** — the governed,
 AI-assisted development pattern — before Notebook 7 assembles the full app.
-
-@@@MD
----
-### ➡️ Continue to **[Notebook 6 · Genie Code — Prompt Playbook for Governed Assets](./06_genie_code_governed_assets)**
-
-Use Genie Code to generate and ship governed SQL/assets with a human-approval
-gate — then Notebook 7 brings Genie, Lakebase, the Knowledge Assistant, and the
-forecast together into one app.

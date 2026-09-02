@@ -491,6 +491,73 @@ def app_auth_obo():
     return _svg(865, 322, body)
 
 
+def ka_backend():
+    """What Agent Bricks builds under the hood for a Knowledge Assistant — notebook 3."""
+    body = _text(30, 26, "What Agent Bricks builds for you (the backend)", size=15, weight="700")
+    bw, bh = 180, 76
+    xs = [30 + i * 200 for i in range(4)]
+    # Build-time lane: ingest → chunk → embed → index.
+    body += _text(30, 58, "① Build time — once, when you click Create", size=12, fill=MUTE, weight="700")
+    build = [
+        (["UC Volume", "policy PDFs"], NEUTRAL),
+        (["Parse + chunk", "split into passages"], DELTA),
+        (["Embed each chunk", "→ vectors"], KNOW),
+        (["Vector Search", "index"], DELTA),
+    ]
+    by = 68
+    for i, (lbl, fam) in enumerate(build):
+        body += _box(xs[i], by, bw, bh, lbl, family=fam, title_size=13, sub_size=11)
+        if i < 3:
+            body += _arrow(xs[i] + bw, by + bh / 2, xs[i+1], by + bh / 2)
+    # Query-time lane: question → retrieve → LLM → grounded answer.
+    body += _text(30, 196, "② Query time — every question the app asks", size=12, fill=MUTE, weight="700")
+    query = [
+        (["Your question", "\"on-time policy?\""], NEUTRAL),
+        (["Retrieve top-k", "matching chunks"], KNOW),
+        (["LLM reads the", "chunks + question"], GENIE),
+        (["Grounded answer", "+ citations"], KNOW),
+    ]
+    qy = 206
+    for i, (lbl, fam) in enumerate(query):
+        body += _box(xs[i], qy, bw, bh, lbl, family=fam, title_size=13, sub_size=11)
+        if i < 3:
+            body += _arrow(xs[i] + bw, qy + bh / 2, xs[i+1], qy + bh / 2)
+    # The index (build) feeds retrieval (query).
+    body += _arrow(xs[3] + bw/2, by + bh, xs[1] + bw/2, qy, "similarity search", dashed=True, color=LINE)
+    body += _text(30, qy + bh + 30,
+                  "All of this is deployed behind one Model Serving endpoint and governed by Unity Catalog "
+                  "(permissions, lineage). You never write chunking, embedding, or retrieval code.",
+                  size=11, fill=MUTE)
+    return _svg(30 + 4*200 - 20 + 30, qy + bh + 46, body)
+
+
+def ka_ui_steps():
+    """Schematic of the Agent Bricks 'Build a Knowledge Assistant' form — notebook 3.
+
+    A diagrammatic stand-in for a UI screenshot (not a real capture): it shows the
+    handful of fields you fill in before Databricks builds everything in ka_backend.
+    """
+    W, H = 640, 340
+    body = _text(30, 26, "Agent Bricks · Build a Knowledge Assistant (what you fill in)", size=15, weight="700")
+    # Window chrome.
+    body += f'<rect x="30" y="44" width="{W-60}" height="{H-70}" rx="12" fill="#FFFFFF" stroke="{LINE}" stroke-width="2"/>'
+    body += f'<rect x="30" y="44" width="{W-60}" height="34" rx="12" fill="{KNOW[0]}" stroke="{KNOW[1]}" stroke-width="2"/>'
+    body += _text(48, 66, "Knowledge Assistant", size=13, fill=INK, weight="700")
+    def field(y, label, value, fam=NEUTRAL):
+        out = _text(52, y, label, size=11, fill=MUTE, weight="700")
+        out += f'<rect x="52" y="{y+8}" width="{W-120}" height="34" rx="8" fill="{fam[0]}" stroke="{fam[1]}" stroke-width="1.5"/>'
+        out += _text(66, y + 30, value, size=12, fill=INK)
+        return out
+    body += field(104, "NAME", "abi-knowledge-assistant-<yourname>")
+    body += field(160, "INSTRUCTIONS", "\"Supply-chain assistant… answer only from the docs, and cite them.\"")
+    body += field(216, "KNOWLEDGE SOURCE  ·  Unity Catalog Volume", "main.<schema>.knowledge_base", DELTA)
+    # Create button.
+    body += f'<rect x="{W-190}" y="272" width="130" height="34" rx="8" fill="{KNOW[1]}"/>'
+    body += _text(W-125, 294, "Create", size=13, fill="#FFFFFF", anchor="middle", weight="700")
+    body += _text(52, 292, "→ Databricks builds the pipeline", size=11, fill=MUTE)
+    return _svg(W, H, body)
+
+
 # registry: token key -> function
 DIAGRAMS = {
     "series_overview": series_overview,
@@ -509,6 +576,8 @@ DIAGRAMS = {
     "genie_code_flow": genie_code_flow,
     "forecast_flow": forecast_flow,
     "knowledge_assistant_flow": knowledge_assistant_flow,
+    "ka_backend": ka_backend,
+    "ka_ui_steps": ka_ui_steps,
     "knowledge_base_docs": knowledge_base_docs,
     "genie_conversation": genie_conversation,
     "structured_vs_unstructured": structured_vs_unstructured,
