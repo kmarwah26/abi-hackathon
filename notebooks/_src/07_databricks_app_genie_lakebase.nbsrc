@@ -319,6 +319,8 @@ The app runs as its **own service principal (SP)**, so grant that SP:
    *"not authorized to use ... this SQL Endpoint."*
 4. **Knowledge Assistant endpoint** — `CAN_QUERY` (also set by the
    `serving_endpoint` resource in Step 4; 5d below makes it explicit).
+5. **Demand-forecast endpoint** — `CAN_QUERY` for the Forecast tab's live inference
+   (also set by the Step 4 resource; 5e below makes it explicit).
 
 All of these are automated below — the SP id is fetched from the app, no copy-paste.
 @@@CODE
@@ -404,6 +406,25 @@ else:
             permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
     )
     print(f"Granted CAN_QUERY on '{KA_ENDPOINT}' to the app SP.")
+
+@@@CODE
+# 5e · Demand-forecast endpoint grant — the SP must query the forecast endpoint for
+# the Forecast tab's live what-if inference. Redundant if the Step 4 serving_endpoint
+# resource applied, but explicit and safe to re-run. (Moved here from Notebook 4:
+# it can only succeed once the app — and therefore its SP — exists.)
+from databricks.sdk.service.serving import (
+    ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel)
+try:
+    ep = w.serving_endpoints.get(name=FORECAST_ENDPOINT)
+    w.serving_endpoints.update_permissions(  # additive — keeps existing ACLs
+        serving_endpoint_id=ep.id,
+        access_control_list=[ServingEndpointAccessControlRequest(
+            service_principal_name=SP,
+            permission_level=ServingEndpointPermissionLevel.CAN_QUERY)],
+    )
+    print(f"Granted CAN_QUERY on '{FORECAST_ENDPOINT}' to the app SP.")
+except Exception as e:  # noqa: BLE001 — e.g. the endpoint is still provisioning
+    print(f"(Couldn't grant on '{FORECAST_ENDPOINT}': {str(e)[:90]})")
 
 @@@MD
 ## Step 6 · Use it, then inspect what was logged

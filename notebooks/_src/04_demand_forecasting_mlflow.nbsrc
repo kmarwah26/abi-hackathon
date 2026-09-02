@@ -357,23 +357,6 @@ else:
         # runtimes — set it to the endpoint name to match the outer `name=` argument.
         config=EndpointCoreConfigInput(name=FORECAST_ENDPOINT, served_entities=served))
     print(f"Creating endpoint '{FORECAST_ENDPOINT}' (first build ~10-15 min).")
-@@@CODE
-# Grant the app's service principal CAN_QUERY — best-effort. On a first run the app
-# doesn't exist until Notebook 7, which attaches this endpoint as a resource (that's
-# where the first-run grant happens); this cell just covers re-runs after the app exists.
-from databricks.sdk.service.serving import (
-    ServingEndpointAccessControlRequest, ServingEndpointPermissionLevel)
-try:
-    sp = w.apps.get(name=f"abi-genie-app-{_dslug}").service_principal_client_id
-    ep = w.serving_endpoints.get(name=FORECAST_ENDPOINT)
-    w.serving_endpoints.update_permissions(
-        serving_endpoint_id=ep.id,
-        access_control_list=[ServingEndpointAccessControlRequest(
-            service_principal_name=sp,
-            permission_level=ServingEndpointPermissionLevel.CAN_QUERY)])
-    print(f"Granted CAN_QUERY on '{FORECAST_ENDPOINT}' to app SP {sp}.")
-except Exception as e:  # noqa: BLE001
-    print(f"(App not created yet — Notebook 7 grants CAN_QUERY via the app resource.) {str(e)[:90]}")
 
 @@@MD
 ## ✅ Recap & `# ⇒ OVER TO YOU`
