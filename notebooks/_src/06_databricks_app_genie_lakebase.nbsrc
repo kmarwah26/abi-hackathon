@@ -409,20 +409,42 @@ for t in ["products", "distributors", "orders", "shipments"]:
 print(f"Granted SELECT on 4 tables to the app SP.")
 
 @@@CODE
-# 5b · Lakebase Postgres grants (uses the `engine` from Step 2).
-# The SP's Postgres role name IS its client id — but that role only exists once the
-# app's **Database resource** is attached (Step 4). If it isn't there, the GRANTs
-# would fail with 'role "<sp>" does not exist', so we check first and guide you.
-with engine.begin() as c:
-    _role = c.execute(text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": SP}).first()
-    if not _role:
-        print(f"⚠️  Postgres role '{SP}' (the app SP) doesn't exist on instance '{INSTANCE}' yet.")
-        print("    That means the app's **Lakebase (Database) resource isn't attached** — Step 4")
-        print("    created the app without it (e.g. you didn't own the instance, or the app is")
-        print("    left over from an earlier run). Fix: make sure Notebook 5 created YOUR per-user")
-        print("    instance, delete the app, re-run Step 4 (it attaches the instance you own),")
-        print("    then re-run this cell. Skipping the Postgres grants for now.")
-    else:
+# 5b · Give the app SP access to your Lakebase instance, then grant table privileges.
+#
+# The deployed app authenticates to Lakebase AS ITS SERVICE PRINCIPAL, so the SP needs
+# a Postgres role on the instance. That role is provisioned when the SP has **CAN_USE**
+# on the instance — which you can grant directly (you own the instance, Notebook 5).
+# This is what makes the app connect ("password authentication failed for user <sp>"
+# otherwise), and it works even if the Database *resource* couldn't be attached in
+# Step 4 (attaching needs MANAGE; this CAN_USE grant does not).
+import time as _t
+from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
+
+try:
+    w.permissions.update(
+        request_object_type="database-instances", request_object_id=INSTANCE,
+        access_control_list=[AccessControlRequest(
+            service_principal_name=SP, permission_level=PermissionLevel.CAN_USE)])
+    print(f"Granted CAN_USE on Lakebase instance '{INSTANCE}' to the app SP.")
+except Exception as e:  # noqa: BLE001
+    print(f"(Couldn't grant CAN_USE on '{INSTANCE}': {str(e).splitlines()[0][:110]}) "
+          f"— you must own the instance (create it in Notebook 5).")
+
+# The SP's Postgres role (its role name IS its client id) provisions a few seconds
+# after the grant — poll for it, then grant table-level privileges.
+_role_ok = False
+for _ in range(12):   # ~60s
+    with engine.connect() as c:
+        if c.execute(text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": SP}).first():
+            _role_ok = True
+            break
+    _t.sleep(5)
+
+if not _role_ok:
+    print(f"⚠️  SP role '{SP}' not provisioned on '{INSTANCE}' yet — re-run this cell in a minute "
+          f"(the CAN_USE grant above provisions it). Skipping table grants for now.")
+else:
+    with engine.begin() as c:
         c.execute(text(f'GRANT USAGE ON SCHEMA app TO "{SP}"'))
         c.execute(text(f'GRANT SELECT, INSERT ON app.conversations TO "{SP}"'))
         # action_items is read/written by the app's "Action items" tab — full CRUD.
@@ -436,7 +458,7 @@ with engine.begin() as c:
         c.execute(text(f'GRANT SELECT ON app.demand_forecast TO "{SP}"'))
         # serial/bigserial sequences backing the write-back tables.
         c.execute(text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO "{SP}"'))
-        print(f"Granted read/write access on the app tables to the app SP.")
+    print(f"Granted read/write access on the app tables to the app SP.")
 
 @@@CODE
 # 5c · SQL-warehouse grant — the SP must be allowed to USE the warehouse the
