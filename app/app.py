@@ -64,7 +64,7 @@ KA_ENDPOINT = os.environ.get("KA_ENDPOINT", "")
 # it into Postgres). The Forecast tab reads it straight from here.
 FORECAST_TABLE = "app.demand_forecast"
 
-# Editable reference table (synced Delta -> Lakebase in Notebook 5). The
+# Editable reference table (copied Delta -> Lakebase in Notebook 5). The
 # "Edit distributors" tab reads it, lets you add/edit/delete rows, and writes the
 # changes back to Lakebase — a live demo of an app persisting business data.
 DISTRIBUTORS_TABLE = "app.distributors"
