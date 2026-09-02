@@ -75,10 +75,19 @@ print(f"Delta source : {FQ}")
 print(f"Lakebase     : instance='{INSTANCE}' db='{APP_DB}' capacity={CAPACITY}")
 
 @@@MD
-## Step 1 · Create the Lakebase instance
+## Step 1 · Create (or reuse) the Lakebase instance
 
-We use the SDK's `database` API. Creation is idempotent here: we try to fetch
-the instance first and only create it if missing. Provisioning takes ~2–5 min.
+The Lakebase **instance is shared** across everyone — the widget name isn't
+per-user. Each participant gets their own **logical database** (`abi_app_<you>`,
+Step 3) *inside* this one instance; the instance is the provisioned/billed unit, so
+one is plenty. This cell fetches it first and only creates it if missing, reusing it
+otherwise (and starting it if it was auto-suspended).
+
+> **Facilitators:** to avoid a cold-start race (many people creating the same
+> instance at once) and N×5-min waits, **pre-create `abi-hackathon-lakebase` once**
+> before the session — then everyone just reuses it. This cell is also
+> concurrency-safe: if two people create it at the same time, the loser reuses it
+> rather than erroring. For a large cohort, bump `capacity` (CU_2 / CU_4).
 @@@CODE
 import time
 from databricks.sdk import WorkspaceClient
@@ -94,10 +103,18 @@ def get_instance(name):
 
 inst = get_instance(INSTANCE)
 if inst is None:
-    print(f"Creating Lakebase instance '{INSTANCE}' ({CAPACITY})…")
-    w.database.create_database_instance(
-        DatabaseInstance(name=INSTANCE, capacity=CAPACITY)
-    )
+    print(f"Creating shared Lakebase instance '{INSTANCE}' ({CAPACITY})…")
+    try:
+        w.database.create_database_instance(
+            DatabaseInstance(name=INSTANCE, capacity=CAPACITY)
+        )
+    except Exception as e:  # noqa: BLE001
+        # Concurrency-safe: in a workshop several people may hit "create" at the same
+        # moment. If someone else just created it, reuse theirs instead of failing.
+        inst = get_instance(INSTANCE)
+        if inst is None:
+            raise
+        print(f"  Instance was created concurrently — reusing it. ({type(e).__name__})")
 else:
     print(f"Instance '{INSTANCE}' already exists (state={inst.state}).")
     # A reused instance is often STOPPED (auto-suspended to save cost). Start it —
