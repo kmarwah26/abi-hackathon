@@ -22,7 +22,10 @@ Notebook 1 (data) is the starting point; everything downstream builds on its
 tables and docs Volume. The Streamlit app source lives in **`app/`** (`app.py`,
 `app.yaml`, `requirements.txt`, `README.md`) and is deployed in Notebook 7.
 `notebooks/_stop_resources.ipynb` is a small utility that stops the app +
-Lakebase (Notebook 7 schedules it for auto-shutdown).
+Lakebase (Notebook 7 schedules it for auto-shutdown). **When you're completely done,
+run `notebooks/_cleanup.ipynb`** to tear down everything you created (app, endpoints,
+Genie space, Lakebase logical DB, and the UC schema with its tables/Volume/models);
+it's per-user and idempotent, and leaves the shared Lakebase instance alone.
 
 ## How the pieces connect
 

@@ -28,7 +28,7 @@ retrieval** are real — not hand-rolled.
 3. Build a **training set via `FeatureLookup`**, train a model, **track it in
    MLflow**, compare against a **baseline** (champion vs challenger), and
    **`fe.log_model`** it to Unity Catalog
-4. **Score the holdout with `fe.score_batch`** — features auto-joined by key
+4. **Score the holdout** — features looked up by key from the feature table
 5. Produce a **forward forecast** and **write it to Delta** (Notebook 5 + the app read it)
 
 > **Prerequisites:** Notebook 1 completed (the `orders` + `products` tables).
@@ -146,8 +146,8 @@ winner with `fe.log_model` — so scoring can **auto-join** features.
 @@@IMG:feature_store_flow
 
 The key idea: the model **remembers the `FeatureLookup`s** it was trained on. At
-scoring time (Step 4) you pass only the keys, and `fe.score_batch` re-joins the
-exact same features from the table — so training and serving can't drift apart.
+scoring time (Step 4) you pass only the keys and the **exact same features are
+re-joined** from the table by key — so training and serving can't drift apart.
 @@@CODE
 import mlflow
 from sklearn.pipeline import Pipeline
@@ -218,23 +218,41 @@ champion = "model" if model_mae < base_mae else "baseline"
 print(f"🏆 Champion: {champion} · registered {MODEL_NAME} · run {run_id}")
 
 @@@MD
-## Step 4 · Score the holdout with `fe.score_batch` (features auto-joined)
+## Step 4 · Score the holdout (features looked up by key)
 
-This is the payoff of the feature table: at scoring time you pass only the **keys**
-`(segment, month)`, and the Feature Engineering client **joins the features for
-you** from `demand_features`, then runs the model. No feature code at inference.
+The payoff of the feature table: at scoring time you pass only the **keys**
+`(segment, month)` and the features are **joined for you** from `demand_features` —
+no feature code at inference.
+
+> **`fe.score_batch` vs. serverless.** The one-liner `fe.score_batch(model_uri, df)`
+> is the production **batch-scoring** path — it runs the model as a **Spark UDF** and
+> auto-joins the features. But that Spark-UDF backend can **invalidate a serverless
+> Spark Connect session** (*"session is no longer usable"*), which kills the rest of
+> the notebook. So on **serverless** we get the identical result the safe way: look
+> the features up with the FE client (the same call as Step 3) and predict with the
+> in-memory model. On a **classic ML cluster** you can call `fe.score_batch` directly:
+> ```python
+> scored = fe.score_batch(model_uri=f"runs:/{run_id}/demand_model",
+>                         df=spark.createDataFrame(test[["segment", "month"]])).toPandas()
+> ```
 @@@CODE
-score_spine = spark.createDataFrame(test[["segment", "month"]])
-scored = fe.score_batch(
-    model_uri=f"runs:/{run_id}/demand_model",
-    df=score_spine,
-).toPandas()
+from databricks.feature_engineering import FeatureLookup
 
-# Sanity: the auto-joined scoring reproduces Step 3's in-memory evaluation.
-chk = scored.merge(test[["segment", "month", "cases"]], on=["segment", "month"])
-print(f"fe.score_batch MAE = {mae(chk['cases'], chk['prediction']):,.0f}  "
+# Serverless-safe scoring: look the features up by key from the governed table
+# (same mechanism as Step 3's training set — no Spark UDF), then predict locally.
+# This still proves the features come from `demand_features`, joined by (segment, month).
+scored = fe.create_training_set(
+    df=spark.createDataFrame(test[["segment", "month", "cases"]]),
+    feature_lookups=[FeatureLookup(table_name=FEATURE_TABLE,
+                                   lookup_key=["segment", "month"], feature_names=NUM_FEATURES)],
+    label="cases",
+).load_df().toPandas()
+scored["prediction"] = model.predict(scored[MODEL_INPUT])
+
+# Sanity: the feature-lookup scoring reproduces Step 3's in-memory evaluation.
+print(f"Feature-lookup scoring MAE = {mae(scored['cases'], scored['prediction']):,.0f}  "
       f"(≈ Step 3 model MAE {model_mae:,.0f})")
-display(scored.sort_values(["month", "segment"]).head(12))
+display(scored.sort_values(["month", "segment"])[["segment", "month", "cases", "prediction"]].head(12))
 
 @@@MD
 ## Step 5 · Forward forecast

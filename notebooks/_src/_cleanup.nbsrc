@@ -1,0 +1,165 @@
+@@@MD
+# 🧹 Cleanup — Tear Down Everything the Series Created
+
+**Pre-Hackathon Enablement · Utility notebook — run this at the end**
+
+This deletes the per-user assets Notebooks 1–7 created, so you don't leave anything
+billing or cluttering the workspace. It's **idempotent and safe to re-run** — each
+step skips gracefully if the asset is already gone.
+
+> ### ⚠️ This is destructive
+> It **permanently deletes** your app, serving endpoints, Genie space, the Lakebase
+> **logical database**, and the Unity Catalog **schema** (its tables, the
+> `knowledge_base` Volume, and the registered models). It uses the **same
+> username-appended names** every other notebook derives, so it only touches *your*
+> assets. Set the **`confirm`** widget to **`yes`** to actually run it.
+
+**What it deletes (all per-user):**
+- App `abi-genie-app-<you>` and the `abi-autoshutdown-<you>` job (Notebook 7)
+- Serving endpoints: `abi-demand-forecast-<you>` (Notebook 4) and, if you name it, your Knowledge Assistant endpoint (Notebook 3)
+- The Genie space for your schema (Notebook 2)
+- The Lakebase **logical DB** `abi_app_<you>` (Notebook 5) — the **shared instance is left running**
+- The UC schema `<catalog>.abi_hackathon_<you>` **CASCADE** — tables, the `knowledge_base` Volume, and the demand-forecast models (Notebooks 1 & 4)
+
+> **What it leaves:** the shared Lakebase **instance** (others may be using it), and
+> MLflow experiments/runs (no cost). Delete those by hand if you want.
+
+@@@MD
+## Step 0 · Install deps
+@@@CODE
+%pip install --quiet --upgrade databricks-sdk psycopg2-binary sqlalchemy
+dbutils.library.restartPython()
+
+@@@MD
+## Step 1 · Parameters
+
+Set these to match what you used in Notebooks 1–7 (the defaults match the series).
+**Run this cell, set the widgets — especially `confirm` = `yes` — then run the next
+cell.** Add your Knowledge Assistant endpoint name if you want it deleted too.
+@@@CODE
+# Create the widgets. Set them up top (confirm = yes), then run the next cell.
+dbutils.widgets.text("catalog", "main", "Unity Catalog catalog (matches NB1)")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
+dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance (shared — NOT deleted)")
+dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")
+dbutils.widgets.text("ka_endpoint", "", "Knowledge Assistant endpoint to delete (blank = skip)")
+dbutils.widgets.dropdown("confirm", "no", ["no", "yes"], "Really delete everything? (destructive)")
+@@@CODE
+# Read the widgets and derive the per-user names (same rule as every other notebook).
+import re
+from databricks.sdk import WorkspaceClient
+w = WorkspaceClient()
+
+_user = spark.sql("SELECT current_user()").collect()[0][0]
+_slug = re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")[:30]
+_dslug = _slug.replace("_", "-")   # app + endpoint names use hyphens
+
+CATALOG = dbutils.widgets.get("catalog").strip()
+SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{_slug}"
+FQ = f"{CATALOG}.{SCHEMA}"
+INSTANCE = dbutils.widgets.get("lakebase_instance").strip()
+APP_DB = f"{dbutils.widgets.get('app_db').strip()}_{_slug}"
+KA_ENDPOINT = dbutils.widgets.get("ka_endpoint").strip()
+APP_NAME = f"abi-genie-app-{_dslug}"
+FORECAST_ENDPOINT = f"abi-demand-forecast-{_dslug}"
+GENIE_TITLE = f"ABI Beverage Supply Chain — {SCHEMA}"
+CONFIRM = dbutils.widgets.get("confirm") == "yes"
+
+print("This run will DELETE:")
+print(f"  app            : {APP_NAME}")
+print(f"  endpoints      : {FORECAST_ENDPOINT}" + (f", {KA_ENDPOINT}" if KA_ENDPOINT else ""))
+print(f"  genie space    : '{GENIE_TITLE}'")
+print(f"  lakebase DB    : {APP_DB}   (instance {INSTANCE} kept)")
+print(f"  UC schema      : {FQ}  (CASCADE — tables, Volume, models)")
+print(f"\nconfirm = {'yes — proceeding' if CONFIRM else 'no — set it to yes to actually delete'}")
+assert CONFIRM, "Set the `confirm` widget to 'yes', then re-run from here."
+
+@@@MD
+## Step 2 · Delete the app + its auto-shutdown job (Notebook 7)
+@@@CODE
+try:
+    w.apps.delete(name=APP_NAME)
+    print(f"Deleted app: {APP_NAME}")
+except Exception as e:  # noqa: BLE001 — already gone / never created is fine
+    print(f"app {APP_NAME}: {str(e).splitlines()[0][:100]}")
+
+# The one-shot auto-shutdown job (Notebook 7, Step 7).
+_jobname = f"abi-autoshutdown-{_user.split('@')[0].replace('.', '_')}"
+_found = False
+for j in w.jobs.list():
+    if j.settings and j.settings.name == _jobname:
+        w.jobs.delete(job_id=j.job_id); _found = True
+        print(f"Deleted job: {_jobname} (id {j.job_id})")
+if not _found:
+    print(f"job {_jobname}: not found (nothing to delete)")
+
+@@@MD
+## Step 3 · Delete the serving endpoints (Notebooks 4 & 3)
+@@@CODE
+for ep in [FORECAST_ENDPOINT] + ([KA_ENDPOINT] if KA_ENDPOINT else []):
+    try:
+        w.serving_endpoints.delete(name=ep)
+        print(f"Deleted serving endpoint: {ep}")
+    except Exception as e:  # noqa: BLE001
+        print(f"endpoint {ep}: {str(e).splitlines()[0][:100]}")
+
+@@@MD
+## Step 4 · Delete the Genie space (Notebook 2)
+
+Looked up by its per-schema title, then deleted via the REST API.
+@@@CODE
+_space = next((s for s in (w.genie.list_spaces().spaces or []) if s.title == GENIE_TITLE), None)
+if _space:
+    try:
+        w.api_client.do("DELETE", f"/api/2.0/genie/spaces/{_space.space_id}")
+        print(f"Deleted Genie space: {_space.space_id}  ('{GENIE_TITLE}')")
+    except Exception as e:  # noqa: BLE001
+        print(f"genie space {_space.space_id}: {str(e).splitlines()[0][:100]}")
+        print("→ If that failed, delete it by hand in the Genie UI.")
+else:
+    print(f"No Genie space titled '{GENIE_TITLE}' — nothing to delete.")
+
+@@@MD
+## Step 5 · Drop the Lakebase logical database (keeps the shared instance)
+
+Connects to the instance's admin database and drops **your** logical DB. The shared
+**instance** (`{lakebase_instance}`) is deliberately left running — others may be
+using it. `WITH (FORCE)` closes any lingering connections so the drop succeeds.
+@@@CODE
+import uuid
+from urllib.parse import quote_plus
+from sqlalchemy import create_engine, text
+
+try:
+    _inst = w.database.get_database_instance(name=INSTANCE)
+    _cred = w.database.generate_database_credential(
+        request_id=str(uuid.uuid4()), instance_names=[INSTANCE])
+    _url = (f"postgresql+psycopg2://{quote_plus(w.current_user.me().user_name)}:"
+            f"{quote_plus(_cred.token)}@{_inst.read_write_dns}:5432/databricks_postgres?sslmode=require")
+    _eng = create_engine(_url, isolation_level="AUTOCOMMIT")  # DROP DATABASE can't run in a txn
+    with _eng.connect() as c:
+        c.execute(text(f'DROP DATABASE IF EXISTS "{APP_DB}" WITH (FORCE)'))
+    print(f"Dropped Lakebase database: {APP_DB}  (instance {INSTANCE} left running).")
+except Exception as e:  # noqa: BLE001
+    print(f"lakebase db {APP_DB}: {str(e).splitlines()[0][:120]}")
+
+@@@MD
+## Step 6 · Drop the Unity Catalog schema (tables, Volume, models)
+
+`CASCADE` removes everything inside: the four Delta tables, the `demand_features`
+and `demand_forecast` tables, the `knowledge_base` Volume, and the registered
+demand-forecast models.
+@@@CODE
+spark.sql(f"DROP SCHEMA IF EXISTS {FQ} CASCADE")
+print(f"Dropped UC schema: {FQ}  (tables, Volume, and models).")
+
+@@@MD
+## ✅ Cleanup complete
+
+Deleted your app, serving endpoints, Genie space, the Lakebase logical DB, and the
+Unity Catalog schema (with its tables, Volume, and models).
+
+**Left in place on purpose:**
+- The **shared Lakebase instance** (`{lakebase_instance}`) — stop it only if no one
+  else is using it: `databricks database update-database-instance <instance> "stopped" --stopped`.
+- **MLflow experiments / runs** from Notebook 4 (no cost) — delete from the Experiments UI if you like.

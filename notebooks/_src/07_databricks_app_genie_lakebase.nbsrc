@@ -514,3 +514,7 @@ You shipped a governed, full-stack pattern end to end:
 
 Swap the dataset, the Genie space, the docs, and the model — keep the skeleton.
 **That completes the enablement series. You're ready to build.** 🍺
+
+> 🧹 **When you're completely done**, run **`_cleanup`** (the sibling utility notebook)
+> to tear down everything you created — the app, serving endpoints, Genie space,
+> Lakebase logical DB, and the UC schema — so nothing is left billing.
