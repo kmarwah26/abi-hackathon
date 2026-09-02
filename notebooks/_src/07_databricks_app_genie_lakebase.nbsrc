@@ -294,8 +294,11 @@ except Exception:
     raise RuntimeError(f"App source not found at {APP_DIR}. Clone this repo as a Databricks "
                        f"Git folder so ../app is a workspace path, then re-run.")
 
-print(f"Deploying {APP_DIR} → {APP_NAME} …")
-dep = w.apps.deploy_and_wait(APP_NAME, AppDeployment(source_code_path=APP_DIR))
+# The apps deploy API wants the /Workspace-prefixed form of the path (the workspace
+# API paths above don't use that prefix, but source_code_path does).
+APP_SRC = f"/Workspace{APP_DIR}"
+print(f"Deploying {APP_SRC} → {APP_NAME} …")
+dep = w.apps.deploy_and_wait(APP_NAME, AppDeployment(source_code_path=APP_SRC))
 _app = w.apps.get(APP_NAME)
 print(f"Deployment: {dep.status}")
 print(f"\n✅ App URL: {_app.url}")
