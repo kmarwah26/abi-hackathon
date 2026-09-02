@@ -59,7 +59,7 @@ notebook:
   **same** name for you, so you don't re-enter it.
 @@@CODE
 # Widgets only — run this cell, then set the values in the widget bar up top.
-dbutils.widgets.text("catalog", "main", "Unity Catalog catalog (must already exist)")
+dbutils.widgets.text("catalog", "technology_dev", "Unity Catalog catalog (must already exist)")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (your username is appended)")
 @@@MD
 Now read the widgets and create **just the schema** inside your chosen catalog.

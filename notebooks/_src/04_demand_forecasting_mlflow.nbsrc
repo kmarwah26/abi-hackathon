@@ -54,7 +54,7 @@ segment keeps enough history per series; per-SKU forecasting is a natural
 extension (see the end).
 @@@CODE
 # Create the widgets. Run this cell, set the values up top, then run the next cell.
-dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
+dbutils.widgets.text("catalog", "technology_dev", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
 dbutils.widgets.text("horizon", "3", "Forecast horizon (months)")
 dbutils.widgets.text("test_months", "3", "Holdout months for evaluation")

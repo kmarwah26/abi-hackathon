@@ -56,7 +56,7 @@ Set your catalog/schema, run the cell, and copy any prompt straight into Genie
 Code. Each one already references your fully-qualified table names.
 @@@CODE
 # Create the widgets. Run this cell, set the values up top, then run the next cell.
-dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
+dbutils.widgets.text("catalog", "technology_dev", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
 @@@CODE
 # Now read the widgets and build the personalized prompts for your schema.

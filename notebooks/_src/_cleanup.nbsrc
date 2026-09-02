@@ -38,7 +38,7 @@ Set these to match what you used in Notebooks 1–7 (the defaults match the seri
 cell.** Add your Knowledge Assistant endpoint name if you want it deleted too.
 @@@CODE
 # Create the widgets. Set them up top (confirm = yes), then run the next cell.
-dbutils.widgets.text("catalog", "main", "Unity Catalog catalog (matches NB1)")
+dbutils.widgets.text("catalog", "technology_dev", "Unity Catalog catalog (matches NB1)")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
 dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance (shared — NOT deleted)")
 dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")

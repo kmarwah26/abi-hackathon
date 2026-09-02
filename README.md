@@ -70,7 +70,7 @@ per-user resource names), so participants never collide. Only the Lakebase
 
 | Widget | Default | Used by |
 |---|---|---|
-| `catalog` | `main` | all |
+| `catalog` | `technology_dev` | all |
 | `schema` | `abi_hackathon` (your username is appended automatically) | all |
 | `endpoint_name` | *(from Notebook 3 — the Knowledge Assistant endpoint)* | 3, 7 |
 | `genie_space_id` | *(auto from Notebook 2; or paste from the space URL)* | 2, 7 |

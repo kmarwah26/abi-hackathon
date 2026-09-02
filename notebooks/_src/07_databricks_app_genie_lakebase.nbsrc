@@ -73,7 +73,7 @@ dbutils.library.restartPython()
 @@@CODE
 # Create the widgets. Run this cell, set the values in the widget bar up top, then
 # run the next cell. (Leave forecast_endpoint blank to auto-derive the per-user name.)
-dbutils.widgets.text("catalog", "main", "Unity Catalog catalog (matches NB1)")
+dbutils.widgets.text("catalog", "technology_dev", "Unity Catalog catalog (matches NB1)")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
 dbutils.widgets.text("genie_space_id", "", "Genie space id (from Notebook 2)")
 dbutils.widgets.text("ka_endpoint", "", "Knowledge Assistant endpoint (NB3; blank = hide docs tab)")
@@ -327,7 +327,7 @@ from databricks.sdk import WorkspaceClient
 import re
 w = WorkspaceClient()
 
-dbutils.widgets.text("catalog", "serverless_razks1_catalog", "Unity Catalog catalog")
+dbutils.widgets.text("catalog", "technology_dev", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
 # Same per-user identity as the other notebooks (deterministic).
 CATALOG = dbutils.widgets.get("catalog").strip()

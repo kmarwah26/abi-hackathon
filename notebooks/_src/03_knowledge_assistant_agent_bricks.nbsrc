@@ -70,7 +70,7 @@ its PDFs are there. If it's empty, run **Notebook 1 · Step 5** first (that's wh
 the Volume and documents are created).
 @@@CODE
 # Create the widgets. Run this cell, set the values up top, then run the next cell.
-dbutils.widgets.text("catalog", "main", "Unity Catalog catalog (same as Notebook 1)")
+dbutils.widgets.text("catalog", "technology_dev", "Unity Catalog catalog (same as Notebook 1)")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
 @@@CODE
 # Now read the widgets and derive the per-user schema (same as Notebook 1).
