@@ -15,7 +15,7 @@ under your fingers.
 | 3 | `notebooks/03_knowledge_assistant_agent_bricks.ipynb` | An **Agent Bricks Knowledge Assistant** over the docs Volume | Guided agent build, Vector Search retrieval, cited answers, responses-API query |
 | 4 | `notebooks/04_demand_forecasting_mlflow.ipynb` | A demand-forecasting model on the `orders` data | Classical ML, **Feature Engineering in UC**, MLflow, baseline vs model, register to UC, Model Serving |
 | 5 | `notebooks/05_lakebase_setup_and_load.ipynb` | A **Lakebase** (managed Postgres) instance + app tables | Provisioning via SDK, OAuth auth, Delta→Postgres reverse ETL, write-back tables |
-| 6 | `notebooks/06_databricks_app_genie_lakebase.ipynb` | A Streamlit Databricks App combining all of the above | SDK create + deploy, service principal + on-behalf-of-user auth, conversation logging, Action-items CRUD, live what-if inference, auto-shutdown |
+| 6 | `notebooks/06_databricks_app_genie_lakebase.ipynb` | A **React + FastAPI** Databricks App combining all of the above | SDK create + deploy, service-principal auth, conversation logging, distributors + Action-items CRUD, live what-if inference, auto-shutdown |
 
 ### Optional / parallel track (not numbered)
 
@@ -24,8 +24,9 @@ under your fingers.
 | `notebooks/genie_code_governed_assets.ipynb` | A **Genie Code** prompt playbook for governed assets — a separate, optional track (copy-paste prompts, review/approve discipline, UC governance) | Notebooks 1–2 only |
 
 Notebook 1 (data) is the starting point; everything downstream builds on its
-tables and docs Volume. The Streamlit app source lives in **`app/`** (`app.py`,
-`app.yaml`, `requirements.txt`, `README.md`) and is created + deployed in Notebook 6.
+tables and docs Volume. The app source lives in **`app/`** — a **FastAPI** backend
+(`app.py`, `server/`) serving a pre-built **React** UI (`frontend/`) — and is
+created + deployed in Notebook 6.
 `notebooks/_stop_resources.ipynb` is a small utility that stops the app +
 Lakebase (Notebook 6 schedules it for auto-shutdown). **When you're completely done,
 run `notebooks/_cleanup.ipynb`** to tear down everything you created (app, endpoints,

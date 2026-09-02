@@ -1,0 +1,10 @@
+# Dependencies (never committed — reinstalled with `npm install`)
+node_modules/
+
+# Vite caches / logs
+.vite/
+*.log
+npm-debug.log*
+
+# NOTE: dist/ is intentionally NOT ignored. Databricks Apps does not build the
+# frontend, so the pre-built dist/ must be committed and deployed.

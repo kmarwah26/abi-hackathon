@@ -1,12 +1,18 @@
-# Databricks App configuration for the ABI Genie + Lakebase assistant.
+# Databricks App configuration for the ABI Supply-Chain Assistant
+# (FastAPI backend + pre-built React frontend).
 #
-# The `command` launches Streamlit. Databricks Apps injects the port the app
-# must listen on; Streamlit reads it from the STREAMLIT_SERVER_PORT env var,
-# which the platform sets for you, so no explicit --server.port is needed.
+# The `command` launches the FastAPI server with uvicorn. Databricks Apps serves
+# on port 8000, so we bind there explicitly (the exec-form array does not expand
+# env vars, so we can't use $DATABRICKS_APP_PORT here — 8000 is the platform
+# default). app.py mounts the JSON API under /api and serves the built SPA from
+# frontend/dist. The frontend must be pre-built (Apps does not run npm).
 command:
-  - "streamlit"
-  - "run"
-  - "app.py"
+  - "uvicorn"
+  - "app:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
 
 env:
   # ----------------------------------------------------------------------

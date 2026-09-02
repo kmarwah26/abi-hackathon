@@ -3,15 +3,20 @@
 
 **Pre-Hackathon Enablement · Notebook 6 of 6**
 
-The finale: assemble everything into one **Databricks App** — a Streamlit app with
-four tabs that
+The finale: assemble everything into one **Databricks App** — a modern
+**React + FastAPI** web app that
 
 1. answers **data** questions with the **Genie** space from Notebook 2,
 2. answers **policy / how-to** questions with the **Agent Bricks Knowledge
    Assistant** from Notebook 3,
 3. charts the **demand forecast** from Notebook 4 (read from Lakebase) and runs
    **live what-if inference** against its Model Serving endpoint (Notebook 4, Step 6), and
-4. logs every Genie turn — and runs a review queue — in **Lakebase** (Notebook 5).
+4. logs every Genie turn, edits `distributors`, and runs a review queue — all in
+   **Lakebase** (Notebook 5).
+
+The **FastAPI** backend (`app/app.py` + `app/server/`) exposes these as a JSON API
+and runs as the app's service principal; a **React (Vite + Tailwind)** single-page
+UI (`app/frontend/`) is the front end. One server serves both.
 
 @@@IMG:series_overview_6
 
@@ -56,9 +61,15 @@ tables, and Postgres privileges on the Lakebase `app.*` tables.
 
 > **Prerequisites:** Notebooks 1–5 done (data, Genie, Knowledge Assistant,
 > forecast, Lakebase). The app source lives in the sibling **`../app/`** folder
-> (`app.py`, `app.yaml`, …). This notebook **creates and deploys the app for you
-> with the SDK** — no CLI needed — as long as the repo is cloned as a **Databricks
-> Git folder** so `../app` is a workspace path.
+> (`app.py`, `app.yaml`, `server/`, and a pre-built `frontend/dist/`). This notebook
+> **creates and deploys the app for you with the SDK** — no CLI needed — as long as
+> the repo is cloned as a **Databricks Git folder** so `../app` is a workspace path.
+>
+> **Frontend build:** Databricks Apps installs `requirements.txt` and runs the
+> `app.yaml` command, but it does **not** build the React app. The repo ships a
+> **pre-built `frontend/dist/`**, so deploy works out of the box. Only if you change
+> the UI under `app/frontend/src/` do you need to rebuild it (`cd app/frontend &&
+> npm install && npm run build`) and commit `dist/` — see `app/frontend/README.md`.
 
 @@@MD
 ## Step 0 · Setup & parameters
@@ -113,11 +124,24 @@ print(f"  Auth               : service-principal only (no OBO scopes needed)")
 @@@MD
 ## Step 1 · The integration code, explained
 
-The whole app is in `../app/app.py` — one tab per service. Four pieces matter.
+The app is a **FastAPI backend** that serves a **React** UI and exposes a JSON API:
+
+```
+app/
+  app.py               # FastAPI: mounts /api routes + serves the built React SPA
+  server/
+    clients.py         # WorkspaceClient() (the SP) + the Lakebase SQLAlchemy engine
+    services.py        # Genie, Knowledge Assistant, forecast, Lakebase CRUD
+    routes.py          # the /api/* endpoints the React app calls
+  frontend/            # React + Vite + Tailwind UI (pre-built into frontend/dist/)
+  app.yaml             # command: uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+The React pages (`frontend/src/pages/`) just `fetch("/api/…")`; all the Databricks
+calls live in `server/services.py`. Four pieces matter.
 
 **A · Ask Genie (Conversation API).** Same calls you validated in Notebook 2 —
-start a conversation on the first turn, continue it after that so Genie keeps
-context:
+start a conversation on the first turn, continue it after that so Genie keeps context:
 ```python
 from databricks.sdk import WorkspaceClient
 w = WorkspaceClient()  # in an App, auto-auths as the service principal
@@ -133,21 +157,18 @@ def ask_genie(question, conversation_id=None):
 
 **B · Ask the Knowledge Assistant (Notebook 3).** The assistant is an Agent Bricks
 **`ResponsesAgent`** served behind an endpoint, so query it with the SDK's
-OpenAI-compatible client via the **Responses API** (not `chat.completions`) — no
-extra auth to wire up in the App:
+OpenAI-compatible client via the **Responses API** (not `chat.completions`):
 ```python
-def ask_ka(question):
-    client = w.serving_endpoints.get_open_ai_client()   # pre-authed as the SP
-    resp = client.responses.create(model=KA_ENDPOINT, input=question)
-    return _answer_text(resp)   # grounded, cited answer parsed from the response
+client = w.serving_endpoints.get_open_ai_client()   # pre-authed as the SP
+resp = client.responses.create(model=KA_ENDPOINT, input=messages)
 ```
 (`get_open_ai_client()` needs `databricks-sdk[openai]` — see `../app/requirements.txt`.)
 
-**C · Show the forecast (Notebook 4).** No recompute at request time — the app
-just reads the forecast Lakebase copied from Delta and charts it:
+**C · Show the forecast (Notebook 4).** No recompute at request time — the backend
+reads the forecast + actuals Lakebase copied from Delta and returns JSON; the React
+**Forecast** page renders it (a Recharts line chart, with live what-if inference):
 ```python
-df = pd.read_sql("SELECT segment, month, forecast_cases FROM app.demand_forecast", conn)
-st.line_chart(df.pivot_table(index="month", columns="segment", values="forecast_cases"))
+GET /api/forecast → {"history": [...], "forecast": [...]}   # from app.demand_monthly / app.demand_forecast
 ```
 
 **D · Log to Lakebase.** OAuth token as the Postgres password, one INSERT per
@@ -159,10 +180,11 @@ INSERT INTO app.conversations
 VALUES (...);
 ```
 
-**Dual-mode auth** is what lets the identical file run locally *and* in the App:
-`WorkspaceClient()` uses your CLI profile locally and the injected SP in the App;
-the Lakebase host/user are derived from the instance and the OAuth token is minted
-in-app.
+**One identity everywhere.** `WorkspaceClient()` uses your CLI profile locally and
+the injected **service principal** in the App; the Lakebase host/user are derived
+from the instance and a short-lived OAuth token is minted in-process. **How the
+frontend serves:** FastAPI mounts `/api/*` first, then serves the pre-built
+`frontend/dist/` for everything else (SPA fallback) — one server, one origin, no CORS.
 
 @@@MD
 ## Step 2 · Confirm the Lakebase tables exist
@@ -561,9 +583,10 @@ except Exception as e:  # noqa: BLE001 — e.g. the endpoint is still provisioni
 @@@MD
 ## Step 6 · Use it, then inspect what was logged
 
-Open the app URL and try all four tabs — **Ask Genie** (data), **Ask the docs**
-(Knowledge Assistant), **Forecast** (the chart from Lakebase), and **Action items**
-(the review queue). Then run this cell to see the conversations the app wrote to
+Open the app URL and try all five tabs — **Ask Genie** (data), **Ask the docs**
+(Knowledge Assistant), **Forecast** (the chart from Lakebase + live what-if),
+**Distributors** (edit rows written back to Lakebase), and **Action items** (the
+review queue). Then run this cell to see the conversations the app wrote to
 Lakebase — proof the whole loop works end to end.
 @@@CODE
 import pandas as pd

@@ -1,10 +1,12 @@
-# ABI Supply-Chain Assistant (Streamlit App)
+# ABI Supply-Chain Assistant (React + FastAPI App)
 
-A Databricks App with four tabs:
+A modern Databricks App — a **FastAPI** backend serving a **React (Vite + Tailwind)**
+single-page UI — with five tabs:
 
 - **Ask Genie** — plain-English questions about the beverage supply-chain data via a **Genie space**
 - **Ask the docs** — policy / how-to questions via an **Agent Bricks Knowledge Assistant** serving endpoint
-- **Forecast** — charts the **demand forecast** read from Lakebase
+- **Forecast** — charts the **demand forecast** + actuals from Lakebase, plus **live what-if inference**
+- **Distributors** — edit reference rows, written straight back to **Lakebase**
 - **Action items** — a Lakebase-backed review queue
 
 Every Genie turn is logged to a **Lakebase** (managed Postgres) table.
@@ -16,18 +18,40 @@ depends on.
 
 ```
 app/
-├── app.py            # Streamlit app: Genie + Knowledge Assistant + Forecast + Lakebase
-├── app.yaml          # Databricks App config (command + env + resources)
-├── requirements.txt  # Python deps
-└── README.md         # this file
+├── app.py               # FastAPI: mounts /api routes + serves the built React SPA
+├── server/
+│   ├── config.py        # env-driven configuration
+│   ├── clients.py       # WorkspaceClient() (SP) + Lakebase SQLAlchemy engine
+│   ├── services.py      # Genie, Knowledge Assistant, forecast, Lakebase CRUD
+│   └── routes.py        # the /api/* JSON endpoints
+├── frontend/            # React + Vite + Tailwind UI
+│   ├── src/             # App shell, components, one page per tab
+│   └── dist/            # PRE-BUILT output, committed & deployed (see below)
+├── app.yaml             # Databricks App config (uvicorn command + env + resources)
+├── requirements.txt     # Python deps
+└── README.md            # this file
 ```
+
+## The frontend build is committed
+
+Databricks Apps installs `requirements.txt` and runs the `app.yaml` command — it
+does **not** run `npm`. So the built UI in **`frontend/dist/` is committed** and
+served by FastAPI as static files. **If you change anything under
+`frontend/src/`, rebuild and commit `dist/`:**
+
+```bash
+cd frontend && npm install && npm run build
+```
+
+See `frontend/README.md` for the full frontend workflow.
 
 ## Prerequisites
 
 - Notebooks 1–5 completed (curated tables + docs Volume, Genie space, Knowledge
-  Assistant endpoint, `demand_forecast`, Lakebase instance + `abi_app.app.*` tables).
+  Assistant endpoint, `demand_forecast` + `demand_monthly`, Lakebase instance + `app.*` tables).
 - Databricks CLI ≥ 0.229.0, authenticated to your FE-VM workspace:
   `databricks auth login --host <workspace-url> --profile <profile>`
+- Node ≥ 18 (only to rebuild the frontend; not needed to deploy the shipped `dist/`).
 
 ## Configure
 
@@ -35,20 +59,29 @@ app/
    space URL: `/genie/rooms/<space-id>`).
 2. Set `KA_ENDPOINT` to your Knowledge Assistant serving-endpoint name (from
    Notebook 3). Leave blank to hide the "Ask the docs" tab.
-3. Confirm `LAKEBASE_INSTANCE` and `PGAPPDB` match what you created in
-   Notebook 5.
+3. Set `FORECAST_ENDPOINT` / `FORECAST_BASE_YEAR` (Notebook 4, Step 6).
+4. Confirm `LAKEBASE_INSTANCE` and `PGAPPDB` match what you created in Notebook 5.
 
 ## Run locally
 
+Two terminals from `app/`:
+
 ```bash
+# 1) backend — serves /api on :8000
 export DATABRICKS_CONFIG_PROFILE=<your-profile>
 export GENIE_SPACE_ID=<your-space-id>
 export KA_ENDPOINT=<your-knowledge-assistant-endpoint>
+export FORECAST_ENDPOINT=<your-forecast-endpoint>
 export PGAPPDB=abi_app
 export LAKEBASE_INSTANCE=abi-hackathon-lakebase
 pip install -r requirements.txt
-streamlit run app.py
+uvicorn app:app --reload --port 8000
+
+# 2) frontend — hot-reload dev server on :5173, proxies /api → :8000
+cd frontend && npm install && npm run dev
 ```
+
+Open http://localhost:5173.
 
 ## Deploy to Databricks Apps
 
@@ -56,17 +89,22 @@ streamlit run app.py
 PROFILE=<your-profile>
 ME=$(databricks current-user me -p $PROFILE | jq -r .userName)
 
+# 0. Build the frontend (only if you changed frontend/src)
+( cd frontend && npm install && npm run build )
+
 # 1. Create the app (once)
 databricks apps create abi-genie-app --description "ABI Genie + Lakebase assistant" -p $PROFILE
 
-# 2. Upload source
+# 2. Upload source (includes the pre-built frontend/dist)
 databricks sync . /Workspace/Users/$ME/abi-genie-app \
-  --exclude .venv --exclude __pycache__ -p $PROFILE
+  --exclude .venv --exclude __pycache__ --exclude 'frontend/node_modules' -p $PROFILE
 
 # 3. Deploy
 databricks apps deploy abi-genie-app \
   --source-code-path /Workspace/Users/$ME/abi-genie-app -p $PROFILE
 ```
+
+(Notebook 6 does all of this for you from inside the workspace, no CLI needed.)
 
 Then attach resources (at create time via `apps create --json`, or in the UI:
 **Compute > Apps > abi-genie-app > Edit > Resources**):
