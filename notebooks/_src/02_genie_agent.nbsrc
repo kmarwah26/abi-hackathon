@@ -44,11 +44,16 @@ dbutils.library.restartPython()
 @@@MD
 ## Step 1 · Parameters
 
-Point at the catalog/schema you created in Notebook 1.
+Point at the catalog/schema you created in Notebook 1. **Run the first cell to
+create the widgets, set them in the widget bar, then run the second cell** to read
+the values — so you enter your names before any code executes.
 @@@CODE
+# Create the widgets. Run this cell once, then set the values in the widget bar at
+# the top of the notebook BEFORE running the next cell.
 dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
-# Same username-appended schema as Notebook 1 (deterministic per user).
+@@@CODE
+# Now read the widgets and derive the per-user schema (same as Notebook 1).
 import re
 CATALOG = dbutils.widgets.get("catalog").strip()
 _user = spark.sql("SELECT current_user()").collect()[0][0]

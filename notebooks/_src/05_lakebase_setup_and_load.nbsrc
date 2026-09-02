@@ -50,12 +50,14 @@ tab), which is exactly the kind of low-latency read/write Lakebase is built for.
 dbutils.library.restartPython()
 
 @@@CODE
+# Create the widgets. Run this cell, set the values up top, then run the next cell.
 dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Delta schema base (username appended — matches NB1)")
 dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance name")
 dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")
 dbutils.widgets.dropdown("capacity", "CU_1", ["CU_1", "CU_2", "CU_4", "CU_8"], "Instance capacity")
-
+@@@CODE
+# Now read the widgets and derive the per-user names.
 # Per-user identity (deterministic). The Lakebase *instance* is shared (one is
 # plenty and it's the pricey bit), but each user gets their own **logical DB**
 # (abi_app_<user>) and their own Delta **schema** (matches Notebook 1) — so

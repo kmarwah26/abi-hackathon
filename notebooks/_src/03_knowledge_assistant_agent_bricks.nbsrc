@@ -68,9 +68,11 @@ Point at the **same** `catalog`/`schema` as Notebook 1 and confirm the Volume an
 its PDFs are there. If it's empty, run **Notebook 1 · Step 5** first (that's where
 the Volume and documents are created).
 @@@CODE
+# Create the widgets. Run this cell, set the values up top, then run the next cell.
 dbutils.widgets.text("catalog", "main", "Unity Catalog catalog (same as Notebook 1)")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
-# Same username-appended schema as Notebook 1 (deterministic per user).
+@@@CODE
+# Now read the widgets and derive the per-user schema (same as Notebook 1).
 import re
 CATALOG = dbutils.widgets.get("catalog").strip()
 _user = spark.sql("SELECT current_user()").collect()[0][0]
@@ -149,6 +151,8 @@ Knowledge Assistant retrieves the relevant chunks from your PDFs and answers fro
 them — the same call an app would make. The questions below map directly to the
 documents from Notebook 1.
 @@@CODE
+# Re-read the widget here so you can set it after Step 3's listing, then run this cell.
+ENDPOINT = dbutils.widgets.get("endpoint_name").strip()
 assert ENDPOINT, "Set the endpoint_name widget (Step 3) to your assistant's endpoint."
 client = w.serving_endpoints.get_open_ai_client()  # pre-authed OpenAI client for this workspace
 

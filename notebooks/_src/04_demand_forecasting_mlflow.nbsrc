@@ -53,13 +53,15 @@ We forecast **monthly total cases by commercial segment** (5 segments). Using
 segment keeps enough history per series; per-SKU forecasting is a natural
 extension (see the end).
 @@@CODE
-import numpy as np
-import pandas as pd
-
+# Create the widgets. Run this cell, set the values up top, then run the next cell.
 dbutils.widgets.text("catalog", "main", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
 dbutils.widgets.text("horizon", "3", "Forecast horizon (months)")
 dbutils.widgets.text("test_months", "3", "Holdout months for evaluation")
+@@@CODE
+# Now read the widgets, derive the per-user names, and pull the monthly demand series.
+import numpy as np
+import pandas as pd
 # Per-user identity (deterministic): _slug for schemas/db names, _dslug (hyphens)
 # for app + serving-endpoint names, which don't allow underscores.
 import re

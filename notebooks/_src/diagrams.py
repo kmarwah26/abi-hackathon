@@ -524,11 +524,13 @@ def ka_backend():
             body += _arrow(xs[i] + bw, qy + bh / 2, xs[i+1], qy + bh / 2)
     # The index (build) feeds retrieval (query).
     body += _arrow(xs[3] + bw/2, by + bh, xs[1] + bw/2, qy, "similarity search", dashed=True, color=LINE)
-    body += _text(30, qy + bh + 30,
-                  "All of this is deployed behind one Model Serving endpoint and governed by Unity Catalog "
-                  "(permissions, lineage). You never write chunking, embedding, or retrieval code.",
+    body += _text(30, qy + bh + 28,
+                  "Deployed behind one Model Serving endpoint, governed by Unity Catalog (permissions + lineage).",
                   size=11, fill=MUTE)
-    return _svg(30 + 4*200 - 20 + 30, qy + bh + 46, body)
+    body += _text(30, qy + bh + 46,
+                  "You never write the chunking, embedding, or retrieval code — Databricks manages all of it.",
+                  size=11, fill=MUTE)
+    return _svg(30 + 4*200 - 20 + 30, qy + bh + 62, body)
 
 
 def ka_ui_steps():
