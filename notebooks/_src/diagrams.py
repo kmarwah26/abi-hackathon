@@ -285,6 +285,39 @@ def lakebase_permissions():
     return _svg(850, 288, body)
 
 
+def app_add_lakebase_resource():
+    """Schematic of attaching the Lakebase Database resource in the app UI — notebook 6.
+
+    A diagrammatic stand-in for a UI screenshot (not a real capture): the Edit →
+    Resources → Add-resource form you fill in when the notebook couldn't attach it.
+    """
+    W, H = 660, 360
+    body = _text(30, 26, "Attaching the Lakebase resource in the app UI", size=15, weight="700")
+    # Breadcrumb / nav path.
+    body += _text(30, 50, "Compute  ›  Apps  ›  abi-genie-app-<you>  ›  Edit  ›  Resources  ›  + Add resource",
+                  size=11, fill=MUTE, weight="600")
+    # Window chrome.
+    body += f'<rect x="30" y="66" width="{W-60}" height="{H-96}" rx="12" fill="#FFFFFF" stroke="{LINE}" stroke-width="2"/>'
+    body += f'<rect x="30" y="66" width="{W-60}" height="34" rx="12" fill="{LAKE[0]}" stroke="{LAKE[1]}" stroke-width="2"/>'
+    body += _text(48, 88, "Add resource", size=13, fill=INK, weight="700")
+
+    def field(y, label, value, fam=NEUTRAL):
+        out = _text(52, y, label, size=11, fill=MUTE, weight="700")
+        out += f'<rect x="52" y="{y+8}" width="{W-124}" height="34" rx="8" fill="{fam[0]}" stroke="{fam[1]}" stroke-width="1.5"/>'
+        out += _text(66, y + 30, value, size=12, fill=INK)
+        return out
+    body += field(126, "RESOURCE TYPE", "Database", KNOW)
+    body += field(182, "DATABASE INSTANCE", "abi-hackathon-lakebase-<you>   (your per-user instance)", LAKE)
+    body += field(238, "PERMISSION", "Can connect and create")
+    # Add + Save buttons.
+    body += f'<rect x="{W-210}" y="292" width="70" height="32" rx="8" fill="none" stroke="{LAKE[1]}" stroke-width="2"/>'
+    body += _text(W-175, 313, "Add", size=13, fill=INK, anchor="middle", weight="700")
+    body += f'<rect x="{W-128}" y="292" width="90" height="32" rx="8" fill="{LAKE[1]}"/>'
+    body += _text(W-83, 313, "Save", size=13, fill="#FFFFFF", anchor="middle", weight="700")
+    body += _text(52, 314, "then Save → the app redeploys with the resource", size=11, fill=MUTE)
+    return _svg(W, H, body)
+
+
 def lakebase_vs_delta():
     """When Lakebase vs Delta — notebook 3."""
     body = _text(30, 28, "When Lakebase, when Delta?", size=15, weight="700")
@@ -624,6 +657,7 @@ DIAGRAMS = {
     "lakebase_app_schema": lakebase_app_schema,
     "reverse_etl_flow": reverse_etl_flow,
     "lakebase_permissions": lakebase_permissions,
+    "app_add_lakebase_resource": app_add_lakebase_resource,
     "app_architecture": app_architecture,
     "request_flow": request_flow,
     "genie_code_flow": genie_code_flow,

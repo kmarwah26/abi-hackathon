@@ -365,6 +365,26 @@ print(f"\n✅ App URL: {_app.url}")
 print(f"   Logs at: {_app.url}/logz")
 
 @@@MD
+### Step 4b · If the Lakebase resource didn't attach — add it in the UI
+
+If Step 4 printed *"Couldn't attach the Lakebase resource"* (you lacked `MANAGE` on
+the instance), the app is up but its **Lakebase tabs can't connect** until the
+Database resource is attached — which provisions the app SP's Postgres role. Add it
+by hand (you, if you own the instance, or an admin):
+
+@@@IMG:app_add_lakebase_resource
+
+1. **Compute → Apps →** your app (`abi-genie-app-<you>`) **→ Edit → Resources → + Add resource**.
+2. **Resource type:** Database. **Instance:** your per-user `abi-hackathon-lakebase-<you>`.
+   **Permission:** *Can connect and create*.
+3. **Add → Save.** The app redeploys with the resource; the SP now has a Postgres role.
+4. Then run **Step 5** below (5b grants the table privileges) and reload the app.
+
+> This is the reliable way to provision the SP's role on workspaces that don't let
+> you attach it from code. It's a diagram of the form, not a live screenshot — the
+> real screen is under **Compute → Apps → Edit → Resources**.
+
+@@@MD
 ## Step 5 · Grant the app's service principal data access
 
 The app runs as its **own service principal (SP)**, so grant that SP:
