@@ -5,9 +5,10 @@ Stops the **Databricks App** and the **Lakebase instance** so they stop billing.
 Run it **manually anytime**, or let the scheduled *auto-shutdown* job (created in
 Notebook 6, Step 7) run it for you after a few hours.
 
-Restart later from the UI, or by re-running Notebooks 5 (Lakebase) and 7 (App).
+Restart later from the UI, or by re-running Notebooks 5 (Lakebase) and 6 (App).
 
-Set the widgets to match the app/instance names you used.
+Both the app and the Lakebase instance are **per-user** — leave the widgets blank to
+auto-derive your names, or set them explicitly.
 @@@CODE
 %pip install --quiet --upgrade databricks-sdk
 dbutils.library.restartPython()
@@ -15,13 +16,13 @@ dbutils.library.restartPython()
 @@@CODE
 import re
 dbutils.widgets.text("app_name", "", "Databricks App name (blank = auto per-user)")
-dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance (shared)")
-# When run by the auto-shutdown job, app_name is passed in; for manual runs we
-# derive your per-user app name from your identity.
+dbutils.widgets.text("lakebase_instance", "", "Lakebase instance (blank = auto per-user)")
+# When run by the auto-shutdown job, both are passed in; for manual runs we derive
+# your per-user app + instance names from your identity (blank widgets).
 _user = spark.sql("SELECT current_user()").collect()[0][0]
 _dslug = re.sub(r"[^a-z0-9]+", "-", _user.split("@")[0].lower()).strip("-")[:30]
 APP = dbutils.widgets.get("app_name").strip() or f"abi-genie-app-{_dslug}"
-INSTANCE = dbutils.widgets.get("lakebase_instance").strip()
+INSTANCE = dbutils.widgets.get("lakebase_instance").strip() or f"abi-hackathon-lakebase-{_dslug}"
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.database import DatabaseInstance

@@ -79,7 +79,7 @@ dbutils.widgets.text("genie_space_id", "", "Genie space id (from Notebook 2)")
 dbutils.widgets.text("ka_endpoint", "", "Knowledge Assistant endpoint (NB3; blank = hide docs tab)")
 dbutils.widgets.text("forecast_endpoint", "", "Forecast serving endpoint (NB4; blank = auto per-user)")
 dbutils.widgets.text("forecast_base_year", "2023", "Forecast base year (from Notebook 4)")
-dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance (shared)")
+dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance base (username appended)")
 dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")
 @@@CODE
 # Read the widgets and derive the per-user names (deterministic from your identity).
@@ -96,7 +96,7 @@ GENIE_SPACE_ID = dbutils.widgets.get("genie_space_id").strip()
 KA_ENDPOINT = dbutils.widgets.get("ka_endpoint").strip()
 FORECAST_ENDPOINT = dbutils.widgets.get("forecast_endpoint").strip() or f"abi-demand-forecast-{_dslug}"
 FORECAST_BASE_YEAR = dbutils.widgets.get("forecast_base_year").strip()
-INSTANCE = dbutils.widgets.get("lakebase_instance").strip()
+INSTANCE = f"{dbutils.widgets.get('lakebase_instance').strip()}-{_dslug}"  # per-user instance (matches NB5)
 APP_DB = f"{dbutils.widgets.get('app_db').strip()}_{_slug}"   # per-user logical DB (matches NB5)
 APP_NAME = f"abi-genie-app-{_dslug}"                          # per-user app name
 
@@ -256,13 +256,11 @@ network access; **genie_space** → `CAN_RUN`; each **serving_endpoint** → `CA
 
 Creating the app provisions compute (a few minutes); deploying builds and starts it.
 
-> **Lakebase resource needs `MANAGE` on the instance.** Attaching the **database**
-> resource requires `MANAGE` (or `CAN_MANAGE`) on the Lakebase *instance* — which you
-> won't have on the **shared** `abi-hackathon-lakebase` you don't own. The cell below
-> handles this: if the attach is denied it **retries without the Lakebase resource**
-> (Genie + forecast tabs still work) and tells you what an admin needs to do.
-> **Facilitators:** grant participants `CAN_MANAGE` on the instance (or attach the
-> Database resource for them) so the app's Lakebase tabs connect.
+> **Lakebase resource & `MANAGE`.** Attaching the **database** resource needs `MANAGE`
+> on the instance. With the **per-user** instance from Notebook 5 you own it, so it
+> attaches cleanly. (If you instead point at a **shared** instance you don't own, the
+> cell below **retries without the Lakebase resource** — Genie + forecast tabs still
+> work — and tells you an admin must grant `CAN_MANAGE` or attach it for you.)
 @@@CODE
 from databricks.sdk.service.apps import (
     App, AppResource, AppResourceDatabase,
@@ -307,7 +305,22 @@ def _create(res):
         name=APP_NAME, description="ABI Genie + Lakebase + Knowledge Assistant + forecast app",
         resources=res))
 
-if APP_NAME in [a.name for a in w.apps.list()]:
+def _delete_if_exists():
+    if next((a for a in w.apps.list() if a.name == APP_NAME), None):
+        w.apps.delete(name=APP_NAME)
+
+# A previous create can leave the app in a failed compute state ("ComputeState.ERROR:
+# App creation failed … remediate by deleting the app"). Detect that and delete it so
+# this run recreates cleanly.
+_existing = next((a for a in w.apps.list() if a.name == APP_NAME), None)
+if _existing is not None:
+    _cs = (getattr(_existing, "compute_status", None) and str(_existing.compute_status.state)) or ""
+    if "ERROR" in _cs.upper():
+        print(f"App '{APP_NAME}' is in a failed state ({_cs}) — deleting it to recreate cleanly.")
+        w.apps.delete(name=APP_NAME)
+        _existing = None
+
+if _existing is not None:
     print(f"App '{APP_NAME}' already exists — skipping create (re-deploy below).")
 else:
     print(f"Creating '{APP_NAME}' with {len(resources)} resources — provisioning compute (~5-10 min)…")
@@ -315,19 +328,21 @@ else:
         _create(resources)
         print("App compute is ready (all resources attached).")
     except Exception as e:  # noqa: BLE001
-        # Attaching the **Lakebase database** resource needs MANAGE on the *instance*.
-        # On a SHARED instance you don't own (the workshop default), you won't have it
-        # ("User needs MANAGE permission on the resource"). Retry without the lakebase
-        # resource so the app still creates with Genie + the serving endpoints.
-        if APP_NAME in [a.name for a in w.apps.list()]:
-            raise  # app half-created for some other reason — surface it
-        print(f"⚠️  Couldn't attach every resource: {str(e).splitlines()[0][:130]}")
-        print("    Retrying WITHOUT the Lakebase resource (needs MANAGE on the shared instance).")
-        _create([r for r in resources if r.name != "lakebase"])
-        print("App created — but the **Lakebase resource is NOT attached**, so the app's")
-        print("Lakebase tabs won't connect until an admin (instance owner) attaches the")
-        print("Database resource, or grants you CAN_MANAGE on the instance and you re-run.")
-        print("Genie + forecast tabs work regardless.")
+        msg = str(e)
+        # Attaching the Lakebase database resource needs MANAGE on the instance. With the
+        # per-user instance from Notebook 5 you own it, so this normally succeeds. If you
+        # point at a shared instance you don't own you'll get "User needs MANAGE permission
+        # on the resource" — retry without the lakebase resource so the app still comes up.
+        if "MANAGE" in msg or "lakebase" in msg.lower() or "database" in msg.lower():
+            _delete_if_exists()   # clear any half-created/ERROR app before retrying
+            print(f"⚠️  Couldn't attach the Lakebase resource: {msg.splitlines()[0][:130]}")
+            print("    Retrying WITHOUT it — you don't own this instance (no MANAGE).")
+            _create([r for r in resources if r.name != "lakebase"])
+            print("App created without the Lakebase resource — Genie + forecast tabs work; an")
+            print("admin must attach the Database resource (or grant CAN_MANAGE) for the Lakebase")
+            print("tabs. With the per-user instance from Notebook 5 this fallback shouldn't fire.")
+        else:
+            raise   # e.g. a transient ComputeState.ERROR — re-run (the delete above cleans it up)
 @@@CODE
 from databricks.sdk.service.apps import AppDeployment
 
@@ -517,12 +532,12 @@ w = WorkspaceClient()
 
 import re
 dbutils.widgets.text("app_name", "", "Databricks App name (blank = auto per-user)")
-dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance (shared)")
+dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance base (username appended)")
 dbutils.widgets.text("shutdown_after_hours", "3", "Auto-shutdown after N hours")
 _user = spark.sql("SELECT current_user()").collect()[0][0]
 _dslug = re.sub(r"[^a-z0-9]+", "-", _user.split("@")[0].lower()).strip("-")[:30]
 APP = dbutils.widgets.get("app_name").strip() or f"abi-genie-app-{_dslug}"
-INSTANCE = dbutils.widgets.get("lakebase_instance").strip()
+INSTANCE = f"{dbutils.widgets.get('lakebase_instance').strip()}-{_dslug}"   # per-user instance (matches NB5)
 N = float(dbutils.widgets.get("shutdown_after_hours"))
 print(f"Auto-shutdown target app: {APP}")
 

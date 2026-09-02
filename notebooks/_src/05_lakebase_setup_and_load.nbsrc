@@ -53,41 +53,41 @@ dbutils.library.restartPython()
 # Create the widgets. Run this cell, set the values up top, then run the next cell.
 dbutils.widgets.text("catalog", "technology_dev", "Unity Catalog catalog")
 dbutils.widgets.text("schema", "abi_hackathon", "Delta schema base (username appended — matches NB1)")
-dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance name")
+dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance base (username appended)")
 dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")
-dbutils.widgets.dropdown("capacity", "CU_2", ["CU_1", "CU_2", "CU_4", "CU_8"], "Instance capacity (shared instance — CU_2+ for a cohort)")
+dbutils.widgets.dropdown("capacity", "CU_1", ["CU_1", "CU_2", "CU_4", "CU_8"], "Instance capacity (per-user instance)")
 @@@CODE
 # Now read the widgets and derive the per-user names.
-# Per-user identity (deterministic). The Lakebase *instance* is shared (one is
-# plenty and it's the pricey bit), but each user gets their own **logical DB**
-# (abi_app_<user>) and their own Delta **schema** (matches Notebook 1) — so
-# participants in a shared workspace never collide.
+# Per-user identity (deterministic). Each participant gets their **own** Lakebase
+# instance, logical DB, and Delta schema — all username-appended — so you own your
+# instance (needed to attach it to your app in Notebook 6) and nobody collides.
 import re
 CATALOG = dbutils.widgets.get("catalog").strip()
 _user = spark.sql("SELECT current_user()").collect()[0][0]
 _slug = re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")[:30]
+_dslug = _slug.replace("_", "-")   # instance / app / endpoint names use hyphens, not underscores
 SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{_slug}"
 FQ = f"{CATALOG}.{SCHEMA}"
-INSTANCE = dbutils.widgets.get("lakebase_instance").strip()   # shared instance
-APP_DB = f"{dbutils.widgets.get('app_db').strip()}_{_slug}"    # per-user logical DB
+INSTANCE = f"{dbutils.widgets.get('lakebase_instance').strip()}-{_dslug}"   # per-user instance
+APP_DB = f"{dbutils.widgets.get('app_db').strip()}_{_slug}"                 # per-user logical DB
 CAPACITY = dbutils.widgets.get("capacity")
 print(f"Delta source : {FQ}")
-print(f"Lakebase     : instance='{INSTANCE}' db='{APP_DB}' capacity={CAPACITY}")
+print(f"Lakebase     : instance='{INSTANCE}' (per-user) db='{APP_DB}' capacity={CAPACITY}")
 
 @@@MD
-## Step 1 · Create (or reuse) the Lakebase instance
+## Step 1 · Create (or reuse) your Lakebase instance
 
-The Lakebase **instance is shared** across everyone — the widget name isn't
-per-user. Each participant gets their own **logical database** (`abi_app_<you>`,
-Step 3) *inside* this one instance; the instance is the provisioned/billed unit, so
-one is plenty. This cell fetches it first and only creates it if missing, reusing it
-otherwise (and starting it if it was auto-suspended).
+Each participant gets their **own** Lakebase instance
+(`abi-hackathon-lakebase-<you>`). You **own** it — which is exactly what lets you
+attach it to your app in Notebook 6 (attaching an instance to an app needs `MANAGE`
+on it, and you only have that on an instance you created). This cell fetches yours
+first and only creates it if missing, reusing it otherwise (and starting it if it was
+auto-suspended). Provisioning a fresh instance takes ~5 min.
 
-> **Facilitators:** to avoid a cold-start race (many people creating the same
-> instance at once) and N×5-min waits, **pre-create `abi-hackathon-lakebase` once**
-> before the session — then everyone just reuses it. This cell is also
-> concurrency-safe: if two people create it at the same time, the loser reuses it
-> rather than erroring. For a large cohort, bump `capacity` (CU_2 / CU_4).
+> **Cost note:** per-user means one provisioned instance *per participant*, so keep
+> `capacity` at **CU_1** unless you need more, and run **`_cleanup`** when you're done
+> (it deletes your instance). If you'd rather share one instance across a cohort, an
+> admin must grant everyone `CAN_MANAGE` on it — see Notebook 6, Step 4.
 @@@CODE
 import time
 from databricks.sdk import WorkspaceClient
@@ -103,18 +103,17 @@ def get_instance(name):
 
 inst = get_instance(INSTANCE)
 if inst is None:
-    print(f"Creating shared Lakebase instance '{INSTANCE}' ({CAPACITY})…")
+    print(f"Creating your Lakebase instance '{INSTANCE}' ({CAPACITY})…")
     try:
         w.database.create_database_instance(
             DatabaseInstance(name=INSTANCE, capacity=CAPACITY)
         )
     except Exception as e:  # noqa: BLE001
-        # Concurrency-safe: in a workshop several people may hit "create" at the same
-        # moment. If someone else just created it, reuse theirs instead of failing.
+        # If it already exists (e.g. a quick re-run created it), reuse it rather than fail.
         inst = get_instance(INSTANCE)
         if inst is None:
             raise
-        print(f"  Instance was created concurrently — reusing it. ({type(e).__name__})")
+        print(f"  Instance already exists — reusing it. ({type(e).__name__})")
 else:
     print(f"Instance '{INSTANCE}' already exists (state={inst.state}).")
     # A reused instance is often STOPPED (auto-suspended to save cost). Start it —

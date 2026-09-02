@@ -30,7 +30,7 @@ tables and docs Volume. The Streamlit app source lives in **`app/`** (`app.py`,
 Lakebase (Notebook 6 schedules it for auto-shutdown). **When you're completely done,
 run `notebooks/_cleanup.ipynb`** to tear down everything you created (app, endpoints,
 Genie space, Lakebase logical DB, and the UC schema with its tables/Volume/models);
-it's per-user and idempotent, and leaves the shared Lakebase instance alone.
+it's per-user and idempotent, and deletes your own per-user Lakebase instance.
 
 ## How the pieces connect
 
@@ -71,8 +71,8 @@ Genie Code (optional, unnumbered) ── generate → review → approve → shi
 Every notebook exposes widgets so you can use your own names without editing code.
 **Running with several people on one workspace?** You don't need to do anything —
 each notebook **automatically appends your username** to the `schema` (and to the
-per-user resource names), so participants never collide. Only the Lakebase
-*instance* is shared.
+per-user resource names — including your own Lakebase **instance**), so participants
+never collide and you own everything you create.
 
 | Widget | Default | Used by |
 |---|---|---|
@@ -80,7 +80,7 @@ per-user resource names), so participants never collide. Only the Lakebase
 | `schema` | `abi_hackathon` (your username is appended automatically) | all |
 | `endpoint_name` | *(from Notebook 3 — the Knowledge Assistant endpoint)* | 3, 6 |
 | `genie_space_id` | *(auto from Notebook 2; or paste from the space URL)* | 2, 6 |
-| `lakebase_instance` | `abi-hackathon-lakebase` (shared) | 5, 6 |
+| `lakebase_instance` | `abi-hackathon-lakebase` (username appended → per-user instance) | 5, 6 |
 | `app_db` | `abi_app` (your username is appended → per-user logical DB) | 5, 6 |
 
 ## Editing / regenerating the notebooks
