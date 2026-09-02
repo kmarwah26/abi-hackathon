@@ -54,9 +54,59 @@ principal**, because that state is shared across everyone, not per-user.
 > forwarded token, so the app falls back to the service principal and flags it.
 
 > **Prerequisites:** Notebooks 1–5 done (data, Genie, Knowledge Assistant,
-> forecast, Lakebase). Databricks CLI ≥ 0.229.0 authenticated to your FE-VM
-> workspace. The app source lives in the sibling **`../app/`** folder (`app.py`,
-> `app.yaml`, `requirements.txt`, `README.md`).
+> forecast, Lakebase). The app source lives in the sibling **`../app/`** folder
+> (`app.py`, `app.yaml`, …). This notebook **creates and deploys the app for you
+> with the SDK** — no CLI needed — as long as the repo is cloned as a **Databricks
+> Git folder** so `../app` is a workspace path.
+
+@@@MD
+## Step 0 · Setup & parameters
+
+**Enter your resource IDs once, here** — the Genie space (Notebook 2), the
+Knowledge Assistant endpoint (Notebook 3), the forecast endpoint (Notebook 4), and
+your Lakebase DB — so every step below (and the deploy) uses them. Run the install
+cell, then the widget cell, **set the values in the widget bar**, then run the
+"read parameters" cell.
+@@@CODE
+%pip install --quiet --upgrade databricks-sdk psycopg2-binary sqlalchemy pyyaml
+dbutils.library.restartPython()
+@@@CODE
+# Create the widgets. Run this cell, set the values in the widget bar up top, then
+# run the next cell. (Leave forecast_endpoint blank to auto-derive the per-user name.)
+dbutils.widgets.text("catalog", "main", "Unity Catalog catalog (matches NB1)")
+dbutils.widgets.text("schema", "abi_hackathon", "Schema base (username appended — matches NB1)")
+dbutils.widgets.text("genie_space_id", "", "Genie space id (from Notebook 2)")
+dbutils.widgets.text("ka_endpoint", "", "Knowledge Assistant endpoint (NB3; blank = hide docs tab)")
+dbutils.widgets.text("forecast_endpoint", "", "Forecast serving endpoint (NB4; blank = auto per-user)")
+dbutils.widgets.text("forecast_base_year", "2023", "Forecast base year (from Notebook 4)")
+dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance (shared)")
+dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")
+@@@CODE
+# Read the widgets and derive the per-user names (deterministic from your identity).
+import re
+from databricks.sdk import WorkspaceClient
+w = WorkspaceClient()
+_user = spark.sql("SELECT current_user()").collect()[0][0]
+_slug = re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")[:30]
+_dslug = _slug.replace("_", "-")   # app + endpoint names can't contain underscores
+
+CATALOG = dbutils.widgets.get("catalog").strip()
+SCHEMA = f"{dbutils.widgets.get('schema').strip()}_{_slug}"
+GENIE_SPACE_ID = dbutils.widgets.get("genie_space_id").strip()
+KA_ENDPOINT = dbutils.widgets.get("ka_endpoint").strip()
+FORECAST_ENDPOINT = dbutils.widgets.get("forecast_endpoint").strip() or f"abi-demand-forecast-{_dslug}"
+FORECAST_BASE_YEAR = dbutils.widgets.get("forecast_base_year").strip()
+INSTANCE = dbutils.widgets.get("lakebase_instance").strip()
+APP_DB = f"{dbutils.widgets.get('app_db').strip()}_{_slug}"   # per-user logical DB (matches NB5)
+APP_NAME = f"abi-genie-app-{_dslug}"                          # per-user app name
+
+print("Resource IDs for this run:")
+print(f"  catalog.schema     : {CATALOG}.{SCHEMA}")
+print(f"  GENIE_SPACE_ID     : {GENIE_SPACE_ID or '(⚠ set the widget)'}")
+print(f"  KA_ENDPOINT        : {KA_ENDPOINT or '(blank — docs tab hidden)'}")
+print(f"  FORECAST_ENDPOINT  : {FORECAST_ENDPOINT}")
+print(f"  PGAPPDB / instance : {APP_DB} / {INSTANCE}")
+print(f"  APP_NAME           : {APP_NAME}")
 
 @@@MD
 ## Step 1 · The integration code, explained
@@ -116,30 +166,16 @@ in-app.
 
 Notebook 5 created `app.conversations` (and copied in `app.demand_forecast`).
 Re-run this to confirm they're there (and create `conversations` if you skipped
-ahead). Set the widgets to match Notebook 5.
-@@@CODE
-%pip install --quiet --upgrade databricks-sdk psycopg2-binary sqlalchemy
-dbutils.library.restartPython()
-
+ahead). Uses `INSTANCE`/`APP_DB` from Step 0.
 @@@CODE
 import uuid
 from urllib.parse import quote_plus
-from databricks.sdk import WorkspaceClient
 from sqlalchemy import create_engine, text
 
-dbutils.widgets.text("lakebase_instance", "abi-hackathon-lakebase", "Lakebase instance name")
-dbutils.widgets.text("app_db", "abi_app", "Lakebase logical DB base (username appended)")
-import re
-INSTANCE = dbutils.widgets.get("lakebase_instance").strip()
-_user = spark.sql("SELECT current_user()").collect()[0][0]
-_slug = re.sub(r"[^a-z0-9]+", "_", _user.split("@")[0].lower()).strip("_")[:30]
-APP_DB = f"{dbutils.widgets.get('app_db').strip()}_{_slug}"   # per-user logical DB (matches NB5)
-print(f"Lakebase DB: {APP_DB}")
-
-w = WorkspaceClient()
 inst = w.database.get_database_instance(name=INSTANCE)
 HOST = inst.read_write_dns
 PGUSER = w.current_user.me().user_name
+print(f"Lakebase DB: {APP_DB}  (instance {INSTANCE})")
 
 def make_engine(dbname):
     cred = w.database.generate_database_credential(request_id=str(uuid.uuid4()), instance_names=[INSTANCE])
@@ -167,88 +203,103 @@ except Exception:
     print("app.demand_forecast not found — run Notebook 4 then Notebook 5 to load it.")
 
 @@@MD
-## Step 3 · Configure the app
+## Step 3 · Write your IDs into `app.yaml`
 
-Open **`../app/app.yaml`** and set:
-- `GENIE_SPACE_ID` → your space id from Notebook 2 (the `…/genie/rooms/<id>` part)
-- `KA_ENDPOINT` → your Knowledge Assistant serving-endpoint name from Notebook 3
-  (leave blank to hide the "Ask the docs" tab)
-- `FORECAST_ENDPOINT` → the per-user serving endpoint from **Notebook 4, Step 6**
-  (`abi-demand-forecast-<your-username>`, which NB4 printed) — powers the Forecast
-  tab's live inference
-- `FORECAST_BASE_YEAR` → the value Notebook 4 printed (matches the model's `trend`)
-- `LAKEBASE_INSTANCE` → `abi-hackathon-lakebase` (shared instance); `PGAPPDB` →
-  your per-user logical DB from Notebook 5 (`abi_app_<your-username>`, which NB5/NB7 printed)
+The app reads its config from `../app/app.yaml` as **literal env values**. This
+cell patches that file in place with the values from Step 0 — so you don't hand-edit
+it — preserving the file's comments. (If it isn't writable from here, it prints the
+exact values to paste in instead.) You don't set the `PG*` connection values: the
+app derives the host + user from the Lakebase instance and mints its own OAuth token.
+@@@CODE
+import os, re as _re
 
-The Step 4 snippet below prints your exact `APP_DB` / `FORECAST_ENDPOINT` — copy
-those into `app.yaml`. (Resource **names** are per-user so several participants can
-run this in one workspace without collisions; only the Lakebase instance is shared.)
+nb_path = (dbutils.notebook.entry_point.getDbutils().notebook()
+           .getContext().notebookPath().get())
+REPO_ROOT = os.path.dirname(os.path.dirname(nb_path))   # the repo root in the workspace
+APP_DIR = f"{REPO_ROOT}/app"
+APP_YAML = f"/Workspace{APP_DIR}/app.yaml"              # FUSE path to the source file
 
-You don't hard-code the `PG*` connection values — the app derives the host + user
-from the Lakebase instance and mints its own OAuth token. Attaching the **Database
-resource** (Step 4) is what gives the SP the Lakebase role + network access.
+_vals = {
+    "GENIE_SPACE_ID": GENIE_SPACE_ID, "KA_ENDPOINT": KA_ENDPOINT,
+    "FORECAST_ENDPOINT": FORECAST_ENDPOINT, "FORECAST_BASE_YEAR": FORECAST_BASE_YEAR,
+    "PGAPPDB": APP_DB, "LAKEBASE_INSTANCE": INSTANCE,
+}
+
+def _patch(txt):
+    for k, v in _vals.items():
+        # swap only the quoted value on the `value:` line under `- name: <k>` (keeps comments)
+        txt = _re.sub(rf'(- name: {k}\s*\n\s+value: )"[^"]*"', rf'\g<1>"{v}"', txt)
+    return txt
+
+try:
+    with open(APP_YAML) as f:
+        patched = _patch(f.read())
+    with open(APP_YAML, "w") as f:
+        f.write(patched)
+    print(f"Patched {APP_YAML}:")
+    for k, v in _vals.items():
+        print(f"  {k} = {v!r}")
+except Exception as e:  # noqa: BLE001 — Git-folder file not writable here → print for manual entry
+    print(f"(Couldn't write app.yaml automatically: {type(e).__name__}: {str(e)[:90]})")
+    print("Set these in ../app/app.yaml by hand, then run Step 4:")
+    for k, v in _vals.items():
+        print(f'  {k}: "{v}"')
 
 @@@MD
-## Step 4 · Create + deploy (fully from the CLI — no UI clicking)
+## Step 4 · Create the app and deploy it — from this notebook
 
-You can attach **all four** resources (Lakebase, the Genie space, the Knowledge
-Assistant endpoint, **and** the demand-forecast endpoint) *at create time* with a
-JSON body, so there's no manual "Edit → Add resource" step. Run this from a
-terminal where the CLI is authenticated, from the repo root:
+No CLI, no UI clicking. This creates the Databricks App **with its resources
+attached** (Lakebase, the Genie space, and the KA + forecast serving endpoints) and
+deploys the `../app` source via the SDK. Attaching the resources is what grants the
+app's service principal what it needs: the **database** resource → a Lakebase role +
+network access; **genie_space** → `CAN_RUN`; each **serving_endpoint** → `CAN_QUERY`.
 
-```bash
-PROFILE=<your-profile>
-ME=$(databricks current-user me -p $PROFILE | jq -r .userName)
-SPACE_ID=<your Genie space id from Notebook 2>
-KA_ENDPOINT=<your Knowledge Assistant endpoint from Notebook 3>
+Creating the app provisions compute (a few minutes); deploying builds and starts it.
+@@@CODE
+from databricks.sdk.service.apps import (
+    App, AppResource, AppResourceDatabase,
+    AppResourceDatabaseDatabasePermission as _DBP,
+    AppResourceGenieSpace, AppResourceGenieSpaceGenieSpacePermission as _GSP,
+    AppResourceServingEndpoint, AppResourceServingEndpointServingEndpointPermission as _SEP)
 
-# Per-user names so several participants in one workspace don't collide. These
-# match what Notebooks 4 & 5 create; only the Lakebase INSTANCE is shared.
-SLUG=$(echo "${ME%@*}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+|_+$//g' | cut -c1-30)
-DSLUG=$(echo "$SLUG" | tr '_' '-')
-APP_NAME=abi-genie-app-$DSLUG
-APP_DB=abi_app_$SLUG                       # per-user logical DB (Notebook 5)
-FORECAST_ENDPOINT=abi-demand-forecast-$DSLUG   # per-user endpoint (Notebook 4, Step 6)
-echo "app=$APP_NAME  db=$APP_DB  forecast=$FORECAST_ENDPOINT"
-# ⇒ Set PGAPPDB=$APP_DB and FORECAST_ENDPOINT=$FORECAST_ENDPOINT in app.yaml (Step 3).
+assert GENIE_SPACE_ID, "Set the genie_space_id widget in Step 0 first."
 
-# 1. Create the app WITH its resources in one shot.
-#    - database resource         -> Lakebase role + network access for the SP
-#    - genie_space resource       -> grants the app's SP "Can run" on the space
-#    - serving_endpoint resources -> grant the SP "Can query" on the KA assistant
-#                                    and on the demand-forecast endpoint
-cat > /tmp/abi_app_create.json <<EOF
-{
-  "name": "$APP_NAME",
-  "description": "ABI Genie + Lakebase + Knowledge Assistant + forecast app",
-  "resources": [
-    {"name": "lakebase", "database": {"instance_name": "abi-hackathon-lakebase",
-       "database_name": "$APP_DB", "permission": "CAN_CONNECT_AND_CREATE"}},
-    {"name": "genie", "genie_space": {"space_id": "$SPACE_ID", "permission": "CAN_RUN"}},
-    {"name": "knowledge_assistant",
-       "serving_endpoint": {"name": "$KA_ENDPOINT", "permission": "CAN_QUERY"}},
-    {"name": "forecast_endpoint",
-       "serving_endpoint": {"name": "$FORECAST_ENDPOINT", "permission": "CAN_QUERY"}}
-  ]
-}
-EOF
-databricks apps create --json @/tmp/abi_app_create.json -p $PROFILE   # waits for compute ACTIVE
+resources = [
+    AppResource(name="lakebase", database=AppResourceDatabase(
+        instance_name=INSTANCE, database_name=APP_DB, permission=_DBP.CAN_CONNECT_AND_CREATE)),
+    AppResource(name="genie", genie_space=AppResourceGenieSpace(
+        name="genie", space_id=GENIE_SPACE_ID, permission=_GSP.CAN_RUN)),
+    AppResource(name="forecast_endpoint", serving_endpoint=AppResourceServingEndpoint(
+        name=FORECAST_ENDPOINT, permission=_SEP.CAN_QUERY)),
+]
+if KA_ENDPOINT:  # only attach the KA endpoint if you created one (Notebook 3)
+    resources.append(AppResource(name="knowledge_assistant", serving_endpoint=AppResourceServingEndpoint(
+        name=KA_ENDPOINT, permission=_SEP.CAN_QUERY)))
 
-# 2. Sync the app source, then deploy.
-databricks sync ./app /Workspace/Users/$ME/$APP_NAME-src \
-  --exclude __pycache__ --exclude .venv -p $PROFILE
-databricks apps deploy $APP_NAME \
-  --source-code-path /Workspace/Users/$ME/$APP_NAME-src -p $PROFILE
+if APP_NAME in [a.name for a in w.apps.list()]:
+    print(f"App '{APP_NAME}' already exists — skipping create (re-deploy below).")
+else:
+    print(f"Creating '{APP_NAME}' with {len(resources)} resources — provisioning compute (~5-10 min)…")
+    w.apps.create_and_wait(App(
+        name=APP_NAME, description="ABI Genie + Lakebase + Knowledge Assistant + forecast app",
+        resources=resources))
+    print("App compute is ready.")
+@@@CODE
+from databricks.sdk.service.apps import AppDeployment
 
-# 3. Get the URL (view logs at <url>/logz).
-databricks apps get $APP_NAME -p $PROFILE
-```
+# As a Databricks Git folder, APP_DIR is a workspace path we can deploy straight from.
+try:
+    w.workspace.get_status(APP_DIR)
+except Exception:
+    raise RuntimeError(f"App source not found at {APP_DIR}. Clone this repo as a Databricks "
+                       f"Git folder so ../app is a workspace path, then re-run.")
 
-> The `lakebase` + `genie` resources are the ones tested to `RUNNING` earlier; the
-> `serving_endpoint` resource is the standard way to grant the SP `Can query` on
-> the assistant. If your CLI version rejects the `serving_endpoint` resource key,
-> drop it here and add the endpoint in the app editor (Edit → Resources), or grant
-> `CAN_QUERY` programmatically in Step 5d.
+print(f"Deploying {APP_DIR} → {APP_NAME} …")
+dep = w.apps.deploy_and_wait(APP_NAME, AppDeployment(source_code_path=APP_DIR))
+_app = w.apps.get(APP_NAME)
+print(f"Deployment: {dep.status}")
+print(f"\n✅ App URL: {_app.url}")
+print(f"   Logs at: {_app.url}/logz")
 
 @@@MD
 ## Step 5 · Grant the app's service principal data access
