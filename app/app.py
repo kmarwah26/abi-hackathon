@@ -109,9 +109,21 @@ st.markdown(
       :root { --abi-ink:#1B3139; --abi-red:#FF3621; --abi-line:#E3E9ED; }
       .block-container { padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1180px; }
       h1, h2, h3 { color: var(--abi-ink); letter-spacing: -0.01em; }
-      /* Tabs: roomier, with an accent underline on the active tab */
-      button[data-baseweb="tab"] { font-size: 0.98rem; font-weight: 600; padding: 0.4rem 0.2rem; }
-      div[data-baseweb="tab-highlight"], div[data-baseweb="tab-border"] { background-color: var(--abi-red); }
+      /* Top nav is a horizontal radio styled as pills (persists across reruns,
+         unlike st.tabs which resets to the first tab on every rerun). */
+      div[data-testid="stRadio"] > div[role="radiogroup"] { gap:8px; flex-wrap:wrap; }
+      div[data-testid="stRadio"] > div[role="radiogroup"] > label {
+        background:#F1F5F7; border:1px solid var(--abi-line); border-radius:10px;
+        padding:8px 16px; margin:0; font-weight:600; cursor:pointer; transition:all .12s;
+      }
+      div[data-testid="stRadio"] > div[role="radiogroup"] > label:hover { border-color:#B7C4CC; }
+      /* hide the little radio dot; the pill itself is the affordance */
+      div[data-testid="stRadio"] > div[role="radiogroup"] > label > div:first-child { display:none; }
+      /* accent the selected pill (modern browsers support :has) */
+      div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
+        background:var(--abi-ink); border-color:var(--abi-ink);
+      }
+      div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) p { color:#fff; }
       /* Metric tiles as cards */
       div[data-testid="stMetric"] {
         background:#F7FAFB; border:1px solid var(--abi-line); border-radius:12px;
@@ -450,8 +462,8 @@ def render_chat_tab(user_email):
             if turn.get("result_df") is not None and not turn["result_df"].empty:
                 st.dataframe(turn["result_df"], use_container_width=True)
 
-    # Sample questions — always available, so they stay handy mid-conversation.
-    # Tucked into an expander once the chat has started to keep the transcript tidy.
+    # Sample questions stay visible throughout the conversation, right above the
+    # input box, so they're always one tap away.
     def _sample_buttons():
         cols = st.columns(2)
         for i, q in enumerate(SAMPLE_QUESTIONS):
@@ -459,12 +471,8 @@ def render_chat_tab(user_email):
                 st.session_state.pending_q = q
                 st.rerun()
 
-    if not st.session_state.history:
-        st.caption("Try a sample question:")
-        _sample_buttons()
-    else:
-        with st.expander("💡 Sample questions"):
-            _sample_buttons()
+    st.caption("💡 Try a sample question:")
+    _sample_buttons()
 
     typed = st.chat_input("Ask a question about products, distributors, orders or shipments…")
     question = typed or st.session_state.pop("pending_q", None)
@@ -600,7 +608,8 @@ def render_docs_tab(user_email):
         with st.chat_message("assistant"):
             st.markdown(turn["a"])
 
-    # Sample questions stay available mid-conversation (in an expander once started).
+    # Sample questions stay visible throughout the conversation (not just before
+    # the first turn), right above the input box, so they're always one tap away.
     def _doc_sample_buttons():
         cols = st.columns(2)
         for i, q in enumerate(SAMPLE_DOC_QUESTIONS):
@@ -608,12 +617,8 @@ def render_docs_tab(user_email):
                 st.session_state.pending_docq = q
                 st.rerun()
 
-    if not st.session_state.docs_history:
-        st.caption("Try a sample question:")
-        _doc_sample_buttons()
-    else:
-        with st.expander("💡 Sample questions"):
-            _doc_sample_buttons()
+    st.caption("💡 Try a sample question:")
+    _doc_sample_buttons()
 
     typed = st.chat_input("Ask about onboarding, freight, quality, fulfillment or returns…")
     question = typed or st.session_state.pop("pending_docq", None)
@@ -1001,19 +1006,20 @@ def main():
         unsafe_allow_html=True,
     )
 
-    tab_chat, tab_docs, tab_forecast, tab_edit, tab_actions = st.tabs(
-        ["💬 Ask Genie", "📄 Ask the docs", "📈 Forecast", "✏️ Edit distributors", "📌 Action items"]
-    )
-    with tab_chat:
-        render_chat_tab(user_email)
-    with tab_docs:
-        render_docs_tab(user_email)
-    with tab_forecast:
-        render_forecast_tab(user_email)
-    with tab_edit:
-        render_edit_tab(user_email)
-    with tab_actions:
-        render_actions_tab(user_email)
+    # A session-state-backed nav (not st.tabs): st.tabs snaps back to the first
+    # tab on every rerun, so asking a question in "Ask the docs" (which reruns)
+    # would bounce you to "Ask Genie". A keyed radio persists the active view.
+    NAV = {
+        "💬 Ask Genie": render_chat_tab,
+        "📄 Ask the docs": render_docs_tab,
+        "📈 Forecast": render_forecast_tab,
+        "✏️ Edit distributors": render_edit_tab,
+        "📌 Action items": render_actions_tab,
+    }
+    active = st.radio("Navigation", list(NAV), key="active_tab",
+                      horizontal=True, label_visibility="collapsed")
+    st.write("")  # a little breathing room under the nav
+    NAV[active](user_email)
 
 
 if __name__ == "__main__":
